@@ -184,13 +184,13 @@ class BoostUI {
     }
   }
 
-  /** 百分比 → 0..1 高度比（平方根曲线：低段更宽） */
+  /** 百分比 → 0..1 高度比（线性等比例：100%→0、500%→1） */
   _fracFromPercent(p) {
-    return Math.sqrt((p - 100) / 400);
+    return (p - 100) / 400;
   }
 
   _posToPercent(frac) {
-    return Math.round(100 + frac * frac * 400);
+    return Math.round(100 + frac * 400);
   }
 
   _sync() {
@@ -258,8 +258,21 @@ class BoostUI {
     z-index: 2147483646;
   }
   .bv-box:hover .bv-panel, .bv-box.bv-open .bv-panel { display: flex; }
+  /* 增益条区域：左侧刻度列 + 右侧轨道 */
+  .bv-body {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .bv-scale {
+    position: relative; width: 30px; height: 128px;
+    font: 10px/1 'Helvetica Neue', 'PingFang SC', Arial, sans-serif;
+    color: rgba(255,255,255,.65); user-select: none;
+  }
+  .bv-scale span {
+    position: absolute; left: 0; transform: translateY(50%);
+    white-space: nowrap;
+  }
   .bv-track {
-    position: relative; width: 4px; height: 96px; border-radius: 3px;
+    position: relative; width: 4px; height: 128px; border-radius: 3px;
     /* 透明 padding 扩大热区（视觉仍 4px），便于抓取 */
     padding: 0 7px; background-clip: content-box;
     background: rgba(255,255,255,.25); cursor: pointer;
@@ -297,7 +310,16 @@ class BoostUI {
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3zm12.4 3a3.4 3.4 0 0 0-1.9-3.05v6.1A3.4 3.4 0 0 0 15.4 12z"/><path d="M14 4.9v2.2a5.4 5.4 0 0 1 0 9.8v2.2a7.6 7.6 0 0 0 0-14.2z"/></svg>
   </button>
   <div class="bv-panel">
-    <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>
+    <div class="bv-body">
+      <div class="bv-scale">
+        <span style="bottom:100%">500%</span>
+        <span style="bottom:75%">400%</span>
+        <span style="bottom:50%">300%</span>
+        <span style="bottom:25%">200%</span>
+        <span style="bottom:0">100%</span>
+      </div>
+      <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>
+    </div>
     <span class="bv-val">100%</span>
   </div>
 </div>
