@@ -186,6 +186,7 @@ class BoostUI {
     this.valEl.textContent = muted ? '静音' : `${this.engine.boost}%`;
     this.valEl.classList.toggle('bv-muted', muted);
     this.muteBtn.classList.toggle('bv-active', muted);
+    this._debugState();
   }
 
   /** 角标 toast，1.2s 自动消失 */
@@ -195,6 +196,15 @@ class BoostUI {
     this.toastEl.classList.add('bv-show');
     if (this._toastTimer) clearTimeout(this._toastTimer);
     this._toastTimer = setTimeout(() => this.toastEl.classList.remove('bv-show'), 1200);
+  }
+
+  /**
+   * 调试通道：把引擎状态同步到宿主元素的 data-bv-state 属性。
+   * ISOLATED world 的全局变量页面不可见，但 light DOM 属性共享，便于自动化校验。
+   */
+  _debugState() {
+    if (!this.host) return;
+    this.host.setAttribute('data-bv-state', JSON.stringify(this.engine.getState()));
   }
 
   unmount() {
