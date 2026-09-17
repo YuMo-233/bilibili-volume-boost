@@ -38,16 +38,15 @@ class BoostUI {
         '.bpx-player-control-bottom',
         '.bpx-player-container'
       ],
-      // 直播控制条为动态渲染的随机类名，无法稳定锚定；直接挂到播放器挂载点（全屏跟随）
-      live: ['.live-player-mounter, .web-player-video-container, .live-player-ctnr', '.web-player-controller-wrap', '.player-section']
+      live: ['.web-player-controller-wrap .web-player-controller-right', '.web-player-controller-wrap', '.live-player-ctrl-wrap .right']
     };
   }
 
-  /** B 站原生音量按钮（增益条插入其"旁边"，仅视频页稳定可用） */
+  /** B 站原生音量按钮（增益条插入其"旁边"） */
   static get ANCHOR_SELECTORS() {
     return {
       video: ['.bpx-player-ctrl-volume'],
-      live: [] // 直播页无稳定锚点，走浮动定位（见 mount）
+      live: ['.web-player-icon-volume', '.webplayer-volume', '.web-player-controller-right [class*="Volume"], .web-player-controller-right [class*="volume"]']
     };
   }
 
@@ -113,19 +112,12 @@ class BoostUI {
       });
     });
 
-    // 插入位置：视频页在音量按钮旁（其后）；直播页浮动定位在播放器右下控制条上方
+    // 插入到 B 站音量按钮旁（其后），否则追加到控制栏容器末尾
     const anchor = this.findAnchor(type);
     if (anchor && anchor.parentNode) {
       anchor.parentNode.insertBefore(this.host, anchor.nextSibling);
     } else {
       slot.appendChild(this.host);
-      if (type === 'live') {
-        // 直播页：固定在播放器区域右下方，避免依赖动态控制条结构（全屏时随容器定位）
-        this.host.style.position = 'absolute';
-        this.host.style.right = '104px';
-        this.host.style.bottom = '46px';
-        this.host.style.zIndex = '9999';
-      }
     }
 
     this._sync();
