@@ -124,6 +124,11 @@ class BoostUI {
     return true;
   }
 
+  /** 面板容器（hover/拖动状态互斥管理） */
+  _box() {
+    return this.root ? this.root.querySelector('.bv-box') : null;
+  }
+
   /**
    * 自绘轨道交互：pointer capture 拖动 + 滚轮微调。
    * 不冒泡给 B 站播放器，规避其全局 mousedown/preventDefault 拦截。
@@ -133,6 +138,7 @@ class BoostUI {
     this.track.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
       e.preventDefault();
+      this._box().classList.add('bv-open'); // 拖动期间锁定展开，防悬停脱靶
       try { this.track.setPointerCapture(e.pointerId); } catch (_) {}
       this._dragId = e.pointerId;
       this._setFromPointer(e);
@@ -146,6 +152,8 @@ class BoostUI {
       if (e.pointerId !== this._dragId) return;
       this._dragId = null;
       this._commit();
+      // 松手后恢复 hover 驱动（指针仍在面板内则 CSS :hover 继续显示）
+      this._box().classList.remove('bv-open');
     };
     this.track.addEventListener('pointerup', release);
     this.track.addEventListener('pointercancel', release);
@@ -158,13 +166,12 @@ class BoostUI {
       this.onBoostChange(Math.max(100, Math.min(500, next)));
     }, { passive: false });
 
-    // 面板展开态（鼠标进入时激活样式切换）
-    this.root.querySelector('.bv-box').addEventListener('mouseenter', () => {
-      this.root.querySelector('.bv-box').classList.add('bv-open');
+    // 面板展开态（鼠标进入时激活；离开时仅非拖动状态下收起）
+    this._box().addEventListener('mouseenter', () => {
+      this._box().classList.add('bv-open');
     });
-    this.root.querySelector('.bv-box').addEventListener('mouseleave', () => {
-      this.root.querySelector('.bv-box').classList.remove('bv-open');
-      if (this._dragId !== null) { this._dragId = null; this._commit(); }
+    this._box().addEventListener('mouseleave', () => {
+      if (this._dragId === null) this._box().classList.remove('bv-open');
     });
   }
 
@@ -253,7 +260,7 @@ class BoostUI {
   }
   /* hover 展开的竖直音量面板（B 站风格） */
   .bv-panel {
-    display: none; position: absolute; bottom: 40px; left: 50%;
+    display: none; position: absolute; bottom: calc(100% - 2px); left: 50%;
     transform: translateX(-50%);
     flex-direction: column; align-items: center; gap: 8px;
     padding: 12px 10px; border-radius: 8px;
@@ -264,11 +271,13 @@ class BoostUI {
   .bv-box:hover .bv-panel, .bv-box.bv-open .bv-panel { display: flex; }
   .bv-track {
     position: relative; width: 4px; height: 92px; border-radius: 2px;
+    /* 用透明 padding 扩大热区（视觉仍 4px），便于抓取 */
+    padding: 0 6px; background-clip: content-box;
     background: rgba(255,255,255,.28); cursor: pointer;
     touch-action: none;
   }
   .bv-fill {
-    position: absolute; left: 0; right: 0; bottom: 0;
+    position: absolute; left: 6px; right: 6px; bottom: 0;
     border-radius: 2px; background: #00aeec;   /* B 站品牌蓝 */
   }
   .bv-thumb {
