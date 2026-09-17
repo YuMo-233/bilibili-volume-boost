@@ -91,9 +91,6 @@
         engine.setBoost(p);
         ui._sync();
         persistBoost();
-      }, () => {
-        ui._sync();
-        persistBoost();
       });
       if (!ui.mount(current.type)) return; // 控制栏尚未渲染，等下次 observer 再试
     }

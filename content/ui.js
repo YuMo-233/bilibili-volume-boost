@@ -9,22 +9,20 @@
  * - 支持鼠标滚轮微调
  *
  * 公共接口（content.js 依赖，保持不变）：
- *   BoostUI(engine, onBoostChange, onMuteChange)
+ *   BoostUI(engine, onBoostChange)
  *   mount(type) / unmount() / isMounted()
  *   _sync() / toast(text)
  */
 class BoostUI {
-  constructor(engine, onBoostChange, onMuteChange) {
+  constructor(engine, onBoostChange) {
     this.engine = engine;
     this.onBoostChange = onBoostChange; // (percent) => void
-    this.onMuteChange = onMuteChange;   // (muted) => void
     this.host = null;
     this.root = null;
     this.track = null;      // 竖直轨道容器
     this.fill = null;       // 蓝色填充条
     this.thumb = null;      // 白色圆点
     this.valEl = null;      // 百分比数值
-    this.muteBtn = null;
     this.toastEl = null;
     this._toastTimer = null;
     this._dragId = null;
@@ -101,16 +99,9 @@ class BoostUI {
     this.fill = this.root.querySelector('.bv-fill');
     this.thumb = this.root.querySelector('.bv-thumb');
     this.valEl = this.root.querySelector('.bv-val');
-    this.muteBtn = this.root.querySelector('.bv-mute');
     this.toastEl = this.root.querySelector('.bv-toast');
 
     this._bindTrack();
-    this.muteBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const muted = this.engine.toggleMute();
-      this._sync();
-      this.onMuteChange(muted);
-    });
 
     // 插入到 B 站音量按钮旁（其后），否则追加到控制栏容器末尾
     const anchor = this.findAnchor(type);
@@ -210,7 +201,6 @@ class BoostUI {
     this.thumb.style.bottom = `${Math.max(0, Math.min(100, frac * 100)).toFixed(1)}%`;
     this.valEl.textContent = muted ? '静音' : `${this.engine.boost}%`;
     this.valEl.classList.toggle('bv-muted', muted);
-    this.muteBtn.classList.toggle('bv-active', muted);
     this._debugState();
   }
 
@@ -237,7 +227,7 @@ class BoostUI {
       this.host.remove();
       this.host = null;
       this.root = null;
-      this.track = this.fill = this.thumb = this.valEl = this.muteBtn = null;
+      this.track = this.fill = this.thumb = this.valEl = null;
     }
   }
 
@@ -245,10 +235,6 @@ class BoostUI {
     return `
 <style>
   :host { all: initial; }
-  .bv-item {
-    display: inline-flex; align-items: center;
-    height: 22px; margin-left: 2px; position: relative;
-  }
   /* 增益按钮 — 与 B 站原生 22px 控制按钮对齐 */
   .bv-box {
     display: inline-flex; align-items: center; justify-content: center;
@@ -295,21 +281,6 @@ class BoostUI {
     color: #fff; white-space: nowrap;
   }
   .bv-val.bv-muted { color: #ff7d7d; }
-  /* 静音按钮 — 与增益按钮平行摆放 */
-  .bv-mute {
-    border: none; background: none; padding: 0; margin: 0 0 0 0;
-    width: 26px; height: 22px; border-radius: 4px;
-    display: inline-flex; align-items: center; justify-content: center;
-    color: #fff; cursor: pointer; line-height: 0;
-    transition: background .15s, color .15s;
-  }
-  .bv-mute:hover { background: rgba(255,255,255,.14); }
-  .bv-mute svg { width: 17px; height: 17px; display: block; }
-  .bv-mute .icon-s { display: block; }
-  .bv-mute .icon-m { display: none; }
-  .bv-mute.bv-active { color: #ff9c9c; }
-  .bv-mute.bv-active .icon-s { display: none; }
-  .bv-mute.bv-active .icon-m { display: block; }
   .bv-toast {
     opacity: 0; transition: opacity .25s;
     position: fixed; left: 50%; bottom: 14%;
@@ -321,20 +292,14 @@ class BoostUI {
   }
   .bv-toast.bv-show { opacity: 1; }
 </style>
-<div class="bv-item">
-  <div class="bv-box">
-    <button class="bv-btn" title="音量增益 100%-500%（悬停弹出，Alt+↑/↓ 调节，滚轮微调）">
-      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3zm12.4 3a3.4 3.4 0 0 0-1.9-3.05v6.1A3.4 3.4 0 0 0 15.4 12z"/><path d="M14 4.9v2.2a5.4 5.4 0 0 1 0 9.8v2.2a7.6 7.6 0 0 0 0-14.2z"/></svg>
-    </button>
-    <div class="bv-panel">
-      <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>
-      <span class="bv-val">100%</span>
-    </div>
-  </div>
-  <button class="bv-mute" title="静音 (Alt+M)">
-    <svg class="icon-s" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M14 9.5a3.4 3.4 0 0 1 0 5M16.5 7.5a6.4 6.4 0 0 1 0 9M19 5.5a9.4 9.4 0 0 1 0 13" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
-    <svg class="icon-m" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M16 9l5 5M21 9l-5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+<div class="bv-box">
+  <button class="bv-btn" title="音量增益 100%-500%（悬停弹出，Alt+↑/↓ 调节，滚轮微调）">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3zm12.4 3a3.4 3.4 0 0 0-1.9-3.05v6.1A3.4 3.4 0 0 0 15.4 12z"/><path d="M14 4.9v2.2a5.4 5.4 0 0 1 0 9.8v2.2a7.6 7.6 0 0 0 0-14.2z"/></svg>
   </button>
+  <div class="bv-panel">
+    <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>
+    <span class="bv-val">100%</span>
+  </div>
 </div>
 <div class="bv-toast"></div>`;
   }
