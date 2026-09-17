@@ -263,12 +263,18 @@
         const data = await Memory.load();
         document.documentElement.setAttribute('data-bv-dbg', JSON.stringify({
           mid: current.mid, type: current.type, name: current.name,
-          boost: engine.boost, engaged: engine.engaged,
+          boost: engine.boost, engaged: engine.getState().engaged,
+          lastApplied,
           enabled: data.enabled, bank: data.bank
         }));
       } catch (e) {
         document.documentElement.setAttribute('data-bv-dbg', JSON.stringify({ err: String(e) }));
       }
+    }, false);
+
+    // 调试动作（浏览器自动化）：强制应用一次记忆，用于定位应用链路
+    window.addEventListener('bv_boost_apply', () => {
+      applyMemoryGain(true);
     }, false);
 
     // 周期性兜底：SPA 内切换视频（URL/bvid 变化）时重新识别；引擎/主播就绪后补应用记忆
