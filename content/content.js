@@ -64,27 +64,37 @@
   }
 
   // ---- 记忆应用 ----
-  async function applyMemoryGain() {
-    if (!current.mid || !engine.engaged) return;
+  // lastApplied：记忆已应用标记（"mid|type"），保证每个主播只应用一次且不被时序捅漏
+  let lastApplied = null;
+
+  async function applyMemoryGain(force) {
+    if (!current.mid || !enabled || !engine.engaged) return; // 引擎未挂载则等下一轮 interval
+    const probe = `${current.mid}|${current.type}`;
+    if (!force && lastApplied === probe) return;
     try {
       const memo = await Memory.getGain(current.mid, current.type);
-      if (memo != null && enabled) {
+      if (memo != null) {
         engine.setBoost(memo);
         uiSync();
       }
+      lastApplied = probe; // 仅在查询成功（引擎已就绪）后置位，避免提前置位导致永不应用
     } catch (_) {}
   }
 
+  /** 防抖写记忆；快照当次 mid/type，避免防抖回调执行时已切到其他主播而写错 key */
   function persistBoost() {
     if (!current.mid || !enabled) return;
+    const snapMid = current.mid;
+    const snapType = current.type;
+    const doWrite = () => Memory.setGain(snapMid, snapType, engine.boost).catch(() => {});
     const now = Date.now();
     if (now - lastPersist < persistDebounce) {
       clearTimeout(persistBoost._t);
-      persistBoost._t = setTimeout(persistBoost, persistDebounce);
+      persistBoost._t = setTimeout(doWrite, persistDebounce);
       return;
     }
     lastPersist = now;
-    Memory.setGain(current.mid, current.type, engine.boost).catch(() => {});
+    doWrite();
   }
 
   // ---- UI 同步 ----
@@ -120,6 +130,7 @@
     if (!video) return;
     if (video === lastVideo && engine.engaged) {
       engine.resumeOnUserGesture(); // 播放中手势恢复
+      applyMemoryGain();            // mid 事件可能晚于引擎挂载到达，这里兜底应用一次
       return;
     }
     if (engine.attach(video)) {
@@ -246,11 +257,12 @@
       return true;
     });
 
-    // 周期性兜底：SPA 内切换视频（URL/bvid 变化）时重新识别
+    // 周期性兜底：SPA 内切换视频（URL/bvid 变化）时重新识别；引擎/主播就绪后补应用记忆
     setInterval(() => {
       domSniff();
       bindVideo();
       ensureUI();
+      applyMemoryGain();
     }, 2000);
   }
 
