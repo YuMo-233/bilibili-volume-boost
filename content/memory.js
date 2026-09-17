@@ -68,7 +68,7 @@ const Memory = {
   },
 
   /** 判断记录类型：直播键形如 "uid.live" / "room:xxx.live"；其余视为视频键 */
-  static typeOf(key) {
+  typeOf(key) {
     return key.endsWith('.live') ? 'live' : 'video';
   },
 
@@ -81,8 +81,8 @@ const Memory = {
       if (oldest) delete data.bank[oldest];
     };
     const keys = Object.keys(data.bank);
-    collect(keys.filter((k) => Memory.typeOf(k) === 'video'), MAX_VIDEO);
-    collect(keys.filter((k) => Memory.typeOf(k) === 'live'), MAX_LIVE);
+    collect(keys.filter((k) => this.typeOf(k) === 'video'), MAX_VIDEO);
+    collect(keys.filter((k) => this.typeOf(k) === 'live'), MAX_LIVE);
   },
 
   async clear() {
