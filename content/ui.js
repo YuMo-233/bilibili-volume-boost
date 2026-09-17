@@ -245,59 +245,71 @@ class BoostUI {
     return `
 <style>
   :host { all: initial; }
-  .bv-box {
+  .bv-item {
     display: inline-flex; align-items: center;
-    height: 36px; padding: 0 6px; border-radius: 4px;
-    background: transparent; transition: background .2s;
-    position: relative; cursor: pointer;
+    height: 22px; margin-left: 2px; position: relative;
   }
-  .bv-box:hover, .bv-box.bv-open { background: rgba(0,0,0,.38); }
+  /* 增益按钮 — 与 B 站原生 22px 控制按钮对齐 */
+  .bv-box {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 22px; padding: 0 3px; border-radius: 4px;
+    position: relative; cursor: pointer; transition: background .15s;
+  }
+  .bv-box:hover, .bv-box.bv-open { background: rgba(255,255,255,.14); }
   .bv-btn {
-    border: none; background: none; padding: 0 2px;
-    font-size: 16px; line-height: 1; cursor: pointer;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,.6));
-    color: #fff;
+    border: none; background: none; padding: 0; margin: 0;
+    width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+    color: #fff; cursor: pointer; line-height: 0;
   }
-  /* hover 展开的竖直音量面板（B 站风格） */
+  .bv-btn svg { width: 17px; height: 17px; display: block; }
+  /* hover 展开的竖直增益面板 */
   .bv-panel {
     display: none; position: absolute; bottom: calc(100% - 2px); left: 50%;
     transform: translateX(-50%);
-    flex-direction: column; align-items: center; gap: 8px;
-    padding: 12px 10px; border-radius: 8px;
-    background: rgba(30,30,36,.92); backdrop-filter: blur(6px);
-    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+    flex-direction: column; align-items: center;
+    padding: 14px 12px; gap: 8px; border-radius: 10px;
+    background: rgba(25,25,30,.96); box-shadow: 0 8px 28px rgba(0,0,0,.5);
     z-index: 2147483646;
   }
   .bv-box:hover .bv-panel, .bv-box.bv-open .bv-panel { display: flex; }
   .bv-track {
-    position: relative; width: 4px; height: 92px; border-radius: 2px;
-    /* 用透明 padding 扩大热区（视觉仍 4px），便于抓取 */
-    padding: 0 6px; background-clip: content-box;
-    background: rgba(255,255,255,.28); cursor: pointer;
+    position: relative; width: 4px; height: 96px; border-radius: 3px;
+    /* 透明 padding 扩大热区（视觉仍 4px），便于抓取 */
+    padding: 0 7px; background-clip: content-box;
+    background: rgba(255,255,255,.25); cursor: pointer;
     touch-action: none;
   }
   .bv-fill {
-    position: absolute; left: 6px; right: 6px; bottom: 0;
-    border-radius: 2px; background: #00aeec;   /* B 站品牌蓝 */
+    position: absolute; left: 7px; right: 7px; bottom: 0;
+    border-radius: 3px; background: linear-gradient(180deg, #6dc8ff, #00aeec);
+    box-shadow: 0 0 6px rgba(0,174,236,.55);
   }
   .bv-thumb {
-    position: absolute; left: 50%; width: 10px; height: 10px;
+    position: absolute; left: 50%; width: 12px; height: 12px;
     transform: translate(-50%, 50%); border-radius: 50%;
-    background: #fff; box-shadow: 0 0 4px rgba(0,0,0,.5);
+    background: #fff; border: 2px solid #00aeec;
+    box-shadow: 0 1px 4px rgba(0,0,0,.55);
   }
   .bv-val {
     font: 11px/1.2 'Helvetica Neue', 'PingFang SC', Arial, sans-serif;
     color: #fff; white-space: nowrap;
   }
   .bv-val.bv-muted { color: #ff7d7d; }
+  /* 静音按钮 — 与增益按钮平行摆放 */
   .bv-mute {
-    border: none; border-radius: 4px; padding: 2px 10px;
-    background: rgba(255,255,255,.14); color: #fff;
-    font: 11px/1.6 'Helvetica Neue', 'PingFang SC', Arial, sans-serif;
-    cursor: pointer;
+    border: none; background: none; padding: 0; margin: 0 0 0 0;
+    width: 26px; height: 22px; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #fff; cursor: pointer; line-height: 0;
+    transition: background .15s, color .15s;
   }
-  .bv-mute:hover { background: rgba(255,255,255,.26); }
-  .bv-mute.bv-active { background: rgba(255,125,125,.35); color: #ffb3b3; }
+  .bv-mute:hover { background: rgba(255,255,255,.14); }
+  .bv-mute svg { width: 17px; height: 17px; display: block; }
+  .bv-mute .icon-s { display: block; }
+  .bv-mute .icon-m { display: none; }
+  .bv-mute.bv-active { color: #ff9c9c; }
+  .bv-mute.bv-active .icon-s { display: none; }
+  .bv-mute.bv-active .icon-m { display: block; }
   .bv-toast {
     opacity: 0; transition: opacity .25s;
     position: fixed; left: 50%; bottom: 14%;
@@ -309,13 +321,20 @@ class BoostUI {
   }
   .bv-toast.bv-show { opacity: 1; }
 </style>
-<div class="bv-box">
-  <button class="bv-btn" title="音量增益 100%-500% (Alt+↑/↓ 调节, 滚轮微调)">🔊</button>
-  <div class="bv-panel">
-    <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>
-    <span class="bv-val">100%</span>
-    <button class="bv-mute" title="静音 (Alt+M)">静音</button>
+<div class="bv-item">
+  <div class="bv-box">
+    <button class="bv-btn" title="音量增益 100%-500%（悬停弹出，Alt+↑/↓ 调节，滚轮微调）">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3zm12.4 3a3.4 3.4 0 0 0-1.9-3.05v6.1A3.4 3.4 0 0 0 15.4 12z"/><path d="M14 4.9v2.2a5.4 5.4 0 0 1 0 9.8v2.2a7.6 7.6 0 0 0 0-14.2z"/></svg>
+    </button>
+    <div class="bv-panel">
+      <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>
+      <span class="bv-val">100%</span>
+    </div>
   </div>
+  <button class="bv-mute" title="静音 (Alt+M)">
+    <svg class="icon-s" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M14 9.5a3.4 3.4 0 0 1 0 5M16.5 7.5a6.4 6.4 0 0 1 0 9M19 5.5a9.4 9.4 0 0 1 0 13" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+    <svg class="icon-m" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M16 9l5 5M21 9l-5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+  </button>
 </div>
 <div class="bv-toast"></div>`;
   }
