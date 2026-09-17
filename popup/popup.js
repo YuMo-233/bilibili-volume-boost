@@ -18,8 +18,10 @@
     const d = await chrome.storage.local.get(MEM_KEY);
     const data = d[MEM_KEY] || { enabled: true, bank: {} };
     enableCheck.checked = !!data.enabled;
-    const n = Object.keys(data.bank || {}).length;
-    countEl.textContent = `已存 ${n} 条 / 上限 256`;
+    const bank = data.bank || {};
+    const nv = Object.keys(bank).filter((k) => k.endsWith('.live')).length;
+    const count = Object.keys(bank).length;
+    countEl.textContent = `${count} 条（视频 ${count - nv}/1024 · 直播 ${nv}/256）`;
     return data;
   }
 
@@ -67,7 +69,7 @@
   clearBtn.addEventListener('click', async () => {
     if (!confirm('确定清空全部音量记忆？')) return;
     await chrome.storage.local.set({ [MEM_KEY]: { enabled: enableCheck.checked, bank: {} } });
-    countEl.textContent = '已存 0 条 / 上限 256';
+    loadGlobal();
     pageState.textContent = '已清空记忆';
   });
 

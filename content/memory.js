@@ -8,12 +8,13 @@
  *     "<mid>.<video|live>": { g: <增益 100-500>, t: <最后使用时间戳> }
  *   }
  * }
- * 上限 256 条，超出按 lastUsed 最旧淘汰（LRU）。
- * 记忆分桶：同一 UP 主视频/直播各一条（docs/adr/0002 分层模型配套）。
+ * 配额：视频记忆上限 1024 条、直播记忆上限 256 条（按类型分开，超出各自配额按
+ * lastUsed 最旧淘汰）。记忆分桶：同一 UP 主视频/直播各一条（docs/adr/0002 分层模型配套）。
  */
 const MEM_KEY = 'volumeBank.v1';
-const MAX_ENTRIES = 256;
-const TOUCH_INTERVAL = 60 * 1000; // LRU touch 节流：访问保活的最小写盘间隔
+const MAX_VIDEO = 1024;             // 视频页记忆上限（用户指定）
+const MAX_LIVE = 256;               // 直播记忆上限（用户指定）
+const TOUCH_INTERVAL = 60 * 1000;   // LRU touch 节流：访问保活的最小写盘间隔
 
 const Memory = {
   /** 写操作串行队列：消除多个"读-改-写"副本互相覆盖的竞态 */
@@ -66,14 +67,22 @@ const Memory = {
     await chrome.storage.local.set({ [MEM_KEY]: data });
   },
 
-  /** LRU 淘汰：总数超 256 时删除最旧一条 */
+  /** 判断记录类型：直播键形如 "uid.live" / "room:xxx.live"；其余视为视频键 */
+  static typeOf(key) {
+    return key.endsWith('.live') ? 'live' : 'video';
+  },
+
+  /** 按类型分配额 LRU 淘汰：各自超限时删除该类中 lastUsed 最旧的一条 */
   _evict(data) {
-    const keys = Object.keys(data.bank);
-    if (keys.length > MAX_ENTRIES) {
+    const collect = (keys, quota) => {
+      if (keys.length <= quota) return;
       keys.sort((a, b) => (data.bank[a].t || 0) - (data.bank[b].t || 0));
       const oldest = keys[0];
       if (oldest) delete data.bank[oldest];
-    }
+    };
+    const keys = Object.keys(data.bank);
+    collect(keys.filter((k) => Memory.typeOf(k) === 'video'), MAX_VIDEO);
+    collect(keys.filter((k) => Memory.typeOf(k) === 'live'), MAX_LIVE);
   },
 
   async clear() {
@@ -83,5 +92,6 @@ const Memory = {
 
 if (typeof window !== 'undefined') {
   window.BVBoostMemory = Memory;
-  window.BV_BOOST_MAX_ENTRIES = MAX_ENTRIES;
+  window.BV_BOOST_MAX_VIDEO = MAX_VIDEO;
+  window.BV_BOOST_MAX_LIVE = MAX_LIVE;
 }
