@@ -76,6 +76,11 @@ class AudioEngine {
     }
   }
 
+  /** 音频管线是否已挂载（供内容脚本守卫使用；注意 ≠ getState().engaged 的临时属性） */
+  get engaged() {
+    return !!this.source;
+  }
+
   /**
    * 设置增益百分比。
    * 100% → 增益 1.0；500% → 增益 5.0；对数刻度（越往大越细）。
