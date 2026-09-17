@@ -13,6 +13,7 @@
  */
 const MEM_KEY = 'volumeBank.v1';
 const MAX_ENTRIES = 256;
+const TOUCH_INTERVAL = 60 * 1000; // LRU touch 节流：访问保活的最小写盘间隔
 
 const Memory = {
   async load() {
@@ -25,11 +26,18 @@ const Memory = {
 
   key(mid, type) { return `${mid}.${type}`; },
 
-  /** 读取某 UP 主的记忆增益，无则返回 null */
+  /** 读取某 UP 主的记忆增益，无则返回 null；命中时刷新 lastUsed（LRU touch） */
   async getGain(mid, type) {
     const data = await this.load();
     const rec = data.bank[this.key(mid, type)];
-    return rec ? rec.g : null;
+    if (!rec) return null;
+    // "访问即保活"：经常观看（即使从不改音量）的 UP 不被 LRU 挤出；
+    // touch 节流 60s，避免高频写盘
+    if (Date.now() - (rec.t || 0) > TOUCH_INTERVAL) {
+      rec.t = Date.now();
+      await chrome.storage.local.set({ [MEM_KEY]: data });
+    }
+    return rec.g;
   },
 
   /** 写入/更新记忆（防抖由调用方处理） */
