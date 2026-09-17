@@ -103,6 +103,15 @@ class BoostUI {
 
     this._bindTrack();
 
+    // 刻度点击直达（500%→100% 五档）
+    this.root.querySelectorAll('.bv-scale span').forEach((sp) => {
+      sp.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const val = parseInt(sp.textContent, 10);
+        if (!Number.isNaN(val)) this.onBoostChange(val);
+      });
+    });
+
     // 插入到 B 站音量按钮旁（其后），否则追加到控制栏容器末尾
     const anchor = this.findAnchor(type);
     if (anchor && anchor.parentNode) {
@@ -269,8 +278,11 @@ class BoostUI {
   }
   .bv-scale span {
     position: absolute; left: 0; transform: translateY(50%);
-    white-space: nowrap;
+    white-space: nowrap; cursor: pointer;
+    padding: 1px 3px; border-radius: 3px;
+    transition: color .15s, background .15s;
   }
+  .bv-scale span:hover { color: #fff; background: rgba(255,255,255,.16); }
   .bv-track {
     position: relative; width: 4px; height: 128px; border-radius: 3px;
     /* 透明 padding 扩大热区（视觉仍 4px），便于抓取 */
