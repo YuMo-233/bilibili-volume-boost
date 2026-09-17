@@ -10,10 +10,10 @@
  *   本引擎只负责增益轨道。最终响度 = 原生音量 × 增益（幅值倍率）。
  *
  * 感知等量刻度（见 docs/adr/0004）：
- * - 对外数值是"感知响度百分比"（Loudness，100-263），遵循 Stevens 幂律（主观响度 ∝ 幅值^0.6），
+ * - 对外数值是"感知响度百分比"（Loudness，100-300），遵循 Stevens 幂律（主观响度 ∝ 幅值^0.6），
  *   拖动/步进时每档听感变化相同（类似系统音量滑块的体验）。
- * - 内部幅值倍率 g ∈ [1, 5]：g = (L/100)^(5/3)；L = 100 · g^0.6。
- *   物理上限幅值 5x ≈ 感知 263%，更高增益只能靠压缩，无感知收益。
+ * - 内部幅值倍率 g ∈ [1, 6.24]：g = (L/100)^(5/3)；L = 100 · g^0.6。
+ *   上限感知 300% = 幅值 6.24x（+16dB）：正常内容无损；仅极端近满刻度素材由压缩器兜底限幅。
  */
 class AudioEngine {
   constructor() {
@@ -89,13 +89,13 @@ class AudioEngine {
 
   /**
    * 设置增益百分比。
-   * 感知刻度：100 → 幅值 1.0；263 → 幅值 5.0（等感知步进）。
+   * 感知刻度：100 → 幅值 1.0；300 → 幅值 6.24（等感知步进）。
    */
   // 常亮感知上限/下限（Loudness 百分比）
   static get PERC_MIN() { return 100; }
-  static get PERC_MAX() { return 263; } // 幅值 5x（物理极限）对应的感知值
+  static get PERC_MAX() { return 300; } // 幅值 6.24x（+16dB），正常内容无损，极端素材由压缩器兜底
 
-  /** 设置感知音量百分比（100-263） */
+  /** 设置感知音量百分比（100-300） */
   setBoost(percent) {
     this.boost = Math.max(AudioEngine.PERC_MIN, Math.min(AudioEngine.PERC_MAX, Math.round(percent)));
     this.apply();
@@ -105,7 +105,7 @@ class AudioEngine {
 
   toggleMute() { this.setMuted(!this.muted); return this.muted; }
 
-  /** 当前幅值倍率：感知值 → 1..5（Stevens 逆幂律，见 ADR-0004） */
+  /** 当前幅值倍率：感知值 → 1..6.24（Stevens 逆幂律，见 ADR-0004） */
   getGainFactor() {
     if (this.muted) return 0;
     const ratio = this.boost / 100;

@@ -156,7 +156,7 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
   }
 
-  const digitBoost = (d) => Math.min(263, 100 + d * 18); // Alt+0→100% ... Alt+9→262%（感知刻度）
+  const digitBoost = (d) => Math.min(300, 100 + d * 20); // Alt+0→100% ... Alt+9→280%（感知刻度）
 
   function onKeyDown(e) {
     if (!enabled || isEditable(e.target)) return; // 防误触：输入框内放行

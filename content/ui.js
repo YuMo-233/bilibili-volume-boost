@@ -193,13 +193,13 @@ class BoostUI {
     }
   }
 
-  /** 感知百分比 → 0..1 高度比（等感知线性：100→0、263→1） */
+  /** 感知百分比 → 0..1 高度比（等感知线性：100→0、300→1） */
   _fracFromPercent(p) {
-    return (p - 100) / (263 - 100);
+    return (p - 100) / 200;
   }
 
   _posToPercent(frac) {
-    return Math.round(100 + frac * 163);
+    return Math.round(100 + frac * 200);
   }
 
   _sync() {
@@ -318,16 +318,16 @@ class BoostUI {
   .bv-toast.bv-show { opacity: 1; }
 </style>
 <div class="bv-box">
-  <button class="bv-btn" title="音量增益 100%-263%（感知等量刻度，悬停弹出，Alt+↑/↓ 调节，滚轮微调）">
+  <button class="bv-btn" title="音量增益 100%-300%（感知等量刻度，悬停弹出，Alt+↑/↓ 调节，滚轮微调）">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3zm12.4 3a3.4 3.4 0 0 0-1.9-3.05v6.1A3.4 3.4 0 0 0 15.4 12z"/><path d="M14 4.9v2.2a5.4 5.4 0 0 1 0 9.8v2.2a7.6 7.6 0 0 0 0-14.2z"/></svg>
   </button>
   <div class="bv-panel">
     <div class="bv-body">
       <div class="bv-scale">
-        <span style="bottom:100%">263%</span>
-        <span style="bottom:75%">222%</span>
-        <span style="bottom:50%">181%</span>
-        <span style="bottom:25%">141%</span>
+        <span style="bottom:100%">300%</span>
+        <span style="bottom:75%">250%</span>
+        <span style="bottom:50%">200%</span>
+        <span style="bottom:25%">150%</span>
         <span style="bottom:0">100%</span>
       </div>
       <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>
