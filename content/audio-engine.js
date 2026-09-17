@@ -7,7 +7,13 @@
  * - 不捕获标签页音频（不用 tabCapture），不会触发 Chrome 的"扩展操纵音频则禁全屏"机制，
  *   从而完整保留 B 站原生沉浸全屏。
  * - 不修改 video.volume（分层音量模型，见 docs/adr/0002）：B 站原生滑块管 0-100%，
- *   本引擎只负责 100%-500% 的增益轨道。最终响度 = 原生音量 × 增益。
+ *   本引擎只负责增益轨道。最终响度 = 原生音量 × 增益（幅值倍率）。
+ *
+ * 感知等量刻度（见 docs/adr/0004）：
+ * - 对外数值是"感知响度百分比"（Loudness，100-263），遵循 Stevens 幂律（主观响度 ∝ 幅值^0.6），
+ *   拖动/步进时每档听感变化相同（类似系统音量滑块的体验）。
+ * - 内部幅值倍率 g ∈ [1, 5]：g = (L/100)^(5/3)；L = 100 · g^0.6。
+ *   物理上限幅值 5x ≈ 感知 263%，更高增益只能靠压缩，无感知收益。
  */
 class AudioEngine {
   constructor() {
@@ -18,7 +24,7 @@ class AudioEngine {
     this.gainNode = null;
     this.comp = null;
     this.video = null;    // 当前挂载的 video 元素
-    this.boost = 100;     // 增益百分比 100-500
+    this.boost = 100;     // 感知音量百分比（Loudness），范围 100-263
     this.muted = false;
   }
 
@@ -83,10 +89,15 @@ class AudioEngine {
 
   /**
    * 设置增益百分比。
-   * 100% → 增益 1.0；500% → 增益 5.0；对数刻度（越往大越细）。
+   * 感知刻度：100 → 幅值 1.0；263 → 幅值 5.0（等感知步进）。
    */
+  // 常亮感知上限/下限（Loudness 百分比）
+  static get PERC_MIN() { return 100; }
+  static get PERC_MAX() { return 263; } // 幅值 5x（物理极限）对应的感知值
+
+  /** 设置感知音量百分比（100-263） */
   setBoost(percent) {
-    this.boost = Math.max(100, Math.min(500, Math.round(percent)));
+    this.boost = Math.max(AudioEngine.PERC_MIN, Math.min(AudioEngine.PERC_MAX, Math.round(percent)));
     this.apply();
   }
 
@@ -94,10 +105,11 @@ class AudioEngine {
 
   toggleMute() { this.setMuted(!this.muted); return this.muted; }
 
-  /** 当前增益数值乘子 */
+  /** 当前幅值倍率：感知值 → 1..5（Stevens 逆幂律，见 ADR-0004） */
   getGainFactor() {
     if (this.muted) return 0;
-    return Math.exp(Math.log(5) * (this.boost - 100) / 400); // 1 → 5 指数映射
+    const ratio = this.boost / 100;
+    return Math.pow(ratio, 5 / 3); // L^0.6 的逆运算
   }
 
   /** 平滑过渡到目标增益，避免爆音瞬态 */

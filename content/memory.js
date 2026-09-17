@@ -30,6 +30,22 @@ const Memory = {
     const data = d[MEM_KEY] || {};
     if (!data.bank) data.bank = {};
     if (typeof data.enabled !== 'boolean') data.enabled = true;
+    // v1 → v2 迁移：旧增益是幅值百分比(100-500)，改为感知刻度(100-263)，
+    // 换算遵循 Stevens 幂律：新L = 100·(旧g/100)^0.6（见 docs/adr/0004）
+    if (!data.version || data.version < 2) {
+      let changed = false;
+      for (const k of Object.keys(data.bank)) {
+        const rec = data.bank[k];
+        if (rec && typeof rec.g === 'number' && rec.g > 263) {
+          rec.g = Math.max(100, Math.min(263, Math.round(100 * Math.pow(rec.g / 100, 0.6))));
+          changed = true;
+        }
+      }
+      data.version = 2;
+      if (changed) {
+        this._q = this._q.then(() => chrome.storage.local.set({ [MEM_KEY]: data })).catch(() => {});
+      }
+    }
     return data;
   },
 
