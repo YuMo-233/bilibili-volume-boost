@@ -97,6 +97,8 @@
       });
       if (!ui.mount(current.type)) return; // 控制栏尚未渲染，等下次 observer 再试
     }
+    // 音量按钮出现后把增益条挪到它"旁边"（播放器初始化时序兜底）
+    if (ui) ui.relocate(current.type);
     uiSync();
   }
 

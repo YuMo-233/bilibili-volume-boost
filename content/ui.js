@@ -34,7 +34,12 @@ class BoostUI {
   /** 控制栏注入点（回退序列） */
   static get SLOT_SELECTORS() {
     return {
-      video: ['.bpx-player-control-bottom .bpx-player-ctrl-right', '.bpx-player-control-bottom', '.bpx-player-container'],
+      video: [
+        '.bpx-player-control-bottom .bpx-player-control-bottom-right',
+        '.bpx-player-control-bottom .bpx-player-ctrl-right',
+        '.bpx-player-control-bottom',
+        '.bpx-player-container'
+      ],
       live: ['.web-player-controller-wrap .web-player-controller-right', '.web-player-controller-wrap', '.live-player-ctrl-wrap .right']
     };
   }
@@ -67,6 +72,19 @@ class BoostUI {
 
   isMounted() {
     return this.host && this.host.isConnected;
+  }
+
+  /**
+   * 位置纠正：B 站播放器初始化时序导致第一次注入时音量按钮可能尚未渲染，
+   * 宿主会先落到控制栏末尾。此方法在音量按钮出现后把宿主挪到它"旁边"。
+   */
+  relocate(type) {
+    if (!this.isMounted()) return;
+    const anchor = this.findAnchor(type);
+    if (!anchor || !anchor.parentNode) return;
+    if (this.host.previousElementSibling !== anchor) {
+      anchor.parentNode.insertBefore(this.host, anchor.nextSibling);
+    }
   }
 
   mount(type) {
