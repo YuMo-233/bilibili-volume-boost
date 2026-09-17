@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "B站音量增强",
+  "version": "1.0.0",
+  "description": "为B站视频与直播提供100%-500%音量增益，按UP主记忆音量，不破坏原生沉浸全屏。",
+  "permissions": ["storage", "activeTab"],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "B站音量增强"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.bilibili.com/video/*", "https://live.bilibili.com/*"],
+      "js": ["content/sniff.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://www.bilibili.com/video/*", "https://live.bilibili.com/*"],
+      "js": ["content/audio-engine.js", "content/memory.js", "content/ui.js", "content/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

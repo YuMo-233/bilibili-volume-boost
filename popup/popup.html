@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>B站音量增强</title>
+  <style>
+    body {
+      width: 300px; margin: 0; padding: 14px 16px;
+      font: 13px/1.6 'Helvetica Neue', Arial, 'PingFang SC', sans-serif;
+      color: #e8e8e8; background: #1e1e24; user-select: none;
+    }
+    h1 { font-size: 15px; margin: 0 0 12px; display: flex; align-items: center; gap: 6px; }
+    h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: #57b6ff; display: inline-block; }
+    .row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid #333; }
+    .row:first-of-type { border-top: none; }
+    .muted { color: #9a9aa3; }
+    .up { color: #57b6ff; font-weight: 600; }
+    .badge { padding: 2px 10px; border-radius: 10px; background: #2fa9ff22; color: #7cc6ff; font-weight: 600; }
+    button {
+      border: none; border-radius: 6px; padding: 5px 12px; cursor: pointer;
+      background: #3a3a44; color: #e8e8e8; font-size: 12px;
+    }
+    button:hover { background: #4a4a56; }
+    button.danger { background: #5a2a2a; color: #ff9c9c; }
+    button.danger:hover { background: #6d3333; }
+    .tips { font-size: 11px; color: #9a9aa3; margin-top: 10px; padding: 8px 10px; background: #282830; border-radius: 6px; }
+    .tips b { color: #d5d5d5; }
+    /* switch */
+    .switch { position: relative; width: 36px; height: 20px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; inset: 0; background: #3a3a44; border-radius: 10px; transition: .2s; cursor: pointer; }
+    .slider::before { content: ''; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; border-radius: 50%; background: #fff; transition: .2s; }
+    .switch input:checked + .slider { background: #2fa9ff; }
+    .switch input:checked + .slider::before { transform: translateX(16px); }
+  </style>
+</head>
+<body>
+  <h1><span class="dot"></span>B站音量增强</h1>
+
+  <div class="row">
+    <span>插件总开关</span>
+    <label class="switch">
+      <input type="checkbox" id="enabled">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="row">
+    <span>当前页面</span>
+    <span id="pageState" class="muted">未在 B 站视频/直播页</span>
+  </div>
+  <div class="row">
+    <span>UP 主</span>
+    <span id="upName" class="up">—</span>
+  </div>
+  <div class="row">
+    <span>当前增益</span>
+    <span id="boost" class="badge">—</span>
+  </div>
+
+  <div class="row">
+    <button id="clearBtn" class="danger">清空全部记忆</button>
+    <span id="count" class="muted"></span>
+  </div>
+
+  <div class="tips">
+    <b>快捷键</b>（播放器内，输入框自动放行）<br>
+    Alt + ↑ / ↓ 微调增益 · Alt + 0-9 定档<br>
+    Alt + M 静音切换<br>
+    <b>音量模型</b>：B 站原生音量管 0-100%，插件的增益管 100%-500%，最终响度 = 原生 × 增益。
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
