@@ -78,7 +78,10 @@
         uiSync();
       }
       lastApplied = probe; // 仅在查询成功（引擎已就绪）后置位，避免提前置位导致永不应用
-    } catch (_) {}
+    } catch (e) {
+      // 诊断输出：自动化定位记忆读取异常
+      document.documentElement.setAttribute('data-bv-dbg-err', String((e && (e.stack || e.message)) || e));
+    }
   }
 
   /** 防抖写记忆；快照当次 mid/type，避免防抖回调执行时已切到其他主播而写错 key */
