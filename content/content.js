@@ -257,6 +257,20 @@
       return true;
     });
 
+    // 调试钩子（浏览器自动化）：触发后把当前状态与存储 dump 到 <html data-bv-dbg>
+    window.addEventListener('bv_boost_debug', async () => {
+      try {
+        const data = await Memory.load();
+        document.documentElement.setAttribute('data-bv-dbg', JSON.stringify({
+          mid: current.mid, type: current.type, name: current.name,
+          boost: engine.boost, engaged: engine.engaged,
+          enabled: data.enabled, bank: data.bank
+        }));
+      } catch (e) {
+        document.documentElement.setAttribute('data-bv-dbg', JSON.stringify({ err: String(e) }));
+      }
+    }, false);
+
     // 周期性兜底：SPA 内切换视频（URL/bvid 变化）时重新识别；引擎/主播就绪后补应用记忆
     setInterval(() => {
       domSniff();

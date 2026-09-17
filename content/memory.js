@@ -16,6 +16,14 @@ const MAX_ENTRIES = 256;
 const TOUCH_INTERVAL = 60 * 1000; // LRU touch 节流：访问保活的最小写盘间隔
 
 const Memory = {
+  /** 写操作串行队列：消除多个"读-改-写"副本互相覆盖的竞态 */
+  _q: Promise.resolve(),
+  _enqueue(task) {
+    const p = this._q.then(task, task);
+    this._q = p.catch(() => {});
+    return p;
+  },
+
   async load() {
     const d = await chrome.storage.local.get(MEM_KEY);
     const data = d[MEM_KEY] || {};
@@ -27,25 +35,29 @@ const Memory = {
   key(mid, type) { return `${mid}.${type}`; },
 
   /** 读取某 UP 主的记忆增益，无则返回 null；命中时刷新 lastUsed（LRU touch） */
-  async getGain(mid, type) {
-    const data = await this.load();
-    const rec = data.bank[this.key(mid, type)];
-    if (!rec) return null;
-    // "访问即保活"：经常观看（即使从不改音量）的 UP 不被 LRU 挤出；
-    // touch 节流 60s，避免高频写盘
-    if (Date.now() - (rec.t || 0) > TOUCH_INTERVAL) {
-      rec.t = Date.now();
-      await chrome.storage.local.set({ [MEM_KEY]: data });
-    }
-    return rec.g;
+  getGain(mid, type) {
+    const now = Date.now();
+    return this._enqueue(async () => {
+      const data = await this.load();
+      const rec = data.bank[this.key(mid, type)];
+      if (!rec) return null;
+      // "访问即保活"：经常观看（即使从不改音量）的 UP 不被 LRU 挤出；touch 节流 60s
+      if (now - (rec.t || 0) > TOUCH_INTERVAL) {
+        rec.t = now;
+        await chrome.storage.local.set({ [MEM_KEY]: data });
+      }
+      return rec.g;
+    });
   },
 
   /** 写入/更新记忆（防抖由调用方处理） */
-  async setGain(mid, type, gain) {
-    const data = await this.load();
-    data.bank[this.key(mid, type)] = { g: gain, t: Date.now() };
-    this._evict(data);
-    await chrome.storage.local.set({ [MEM_KEY]: data });
+  setGain(mid, type, gain) {
+    return this._enqueue(async () => {
+      const data = await this.load();
+      data.bank[this.key(mid, type)] = { g: gain, t: Date.now() };
+      this._evict(data);
+      await chrome.storage.local.set({ [MEM_KEY]: data });
+    });
   },
 
   async setEnabled(val) {
