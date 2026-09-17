@@ -50,9 +50,15 @@
         const m = a && a.href.match(/space\.bilibili\.com\/(\d+)/);
         if (m) setCurrent(m[1], 'video', (a && a.getAttribute('title')) || '');
       } else {
-        const a = document.querySelector('.anchor-info a[href*="space.bilibili.com"], .room-owner-info a[href*="space.bilibili.com"], a[href*="space.bilibili.com"]');
+        // 新版直播页无 space 链接（实测），room-owner-username 亦无 uid；
+        // DOM 兜底退化为"房间号键"（同一房间长期对应同一主播，保证记忆稳定）
+        const a = document.querySelector('.anchor-info a[href*="space.bilibili.com"], a[href*="space.bilibili.com"]');
         const m = a && a.href.match(/space\.bilibili\.com\/(\d+)/);
-        if (m) setCurrent(m[1], 'live', '');
+        const m2 = location.pathname.match(/^\/(\d+)/);
+        const nameEl = document.querySelector('.room-owner-username');
+        const name = nameEl ? nameEl.textContent.trim() : '';
+        if (m) setCurrent(m[1], 'live', name || (a && a.getAttribute('title')) || '');
+        else if (m2) setCurrent('room:' + m2[1], 'live', name);
       }
     } catch (_) {}
   }
