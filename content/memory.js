@@ -30,8 +30,8 @@ const Memory = {
     const data = d[MEM_KEY] || {};
     if (!data.bank) data.bank = {};
     if (typeof data.enabled !== 'boolean') data.enabled = true;
-    // v1 → v2 迁移：旧增益是幅值百分比(100-500)，改为感知刻度(100-263)，
-    // 换算遵循 Stevens 幂律：新L = 100·(旧g/100)^0.6（见 docs/adr/0004）
+    // v1 → v2 迁移：旧增益是幅值百分比(100-500)，改为感知刻度（当前范围 50-300），
+    // 换算遵循 Stevens 幂律：新L = 100·(旧g/100)^0.6（见 docs/adr/0004），上限钳到 v2 时代上限 263
     if (!data.version || data.version < 2) {
       let changed = false;
       for (const k of Object.keys(data.bank)) {

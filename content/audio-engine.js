@@ -10,9 +10,10 @@
  *   本引擎只负责增益轨道。最终响度 = 原生音量 × 增益（幅值倍率）。
  *
  * 感知等量刻度（见 docs/adr/0004）：
- * - 对外数值是"感知响度百分比"（Loudness，100-300），遵循 Stevens 幂律（主观响度 ∝ 幅值^0.6），
+ * - 对外数值是"感知响度百分比"（Loudness，50-300），遵循 Stevens 幂律（主观响度 ∝ 幅值^0.6），
  *   拖动/步进时每档听感变化相同（类似系统音量滑块的体验）。
- * - 内部幅值倍率 g ∈ [1, 6.24]：g = (L/100)^(5/3)；L = 100 · g^0.6。
+ * - 内部幅值倍率 g：g = (L/100)^(5/3)；L = 100 · g^0.6。
+ *   下限感知 50% = 幅值 0.315（-10dB，用于压低过响的极端素材），默认 100%（1x）；
  *   上限感知 300% = 幅值 6.24x（+16dB）：正常内容无损；仅极端近满刻度素材由压缩器兜底限幅。
  */
 class AudioEngine {
@@ -24,7 +25,7 @@ class AudioEngine {
     this.gainNode = null;
     this.comp = null;
     this.video = null;    // 当前挂载的 video 元素
-    this.boost = 100;     // 感知音量百分比（Loudness），范围 100-263
+    this.boost = 100;     // 感知音量百分比（Loudness），范围 50-300，默认 100
     this.muted = false;
   }
 
@@ -91,11 +92,11 @@ class AudioEngine {
    * 设置增益百分比。
    * 感知刻度：100 → 幅值 1.0；300 → 幅值 6.24（等感知步进）。
    */
-  // 常亮感知上限/下限（Loudness 百分比）
-  static get PERC_MIN() { return 100; }
-  static get PERC_MAX() { return 300; } // 幅值 6.24x（+16dB），正常内容无损，极端素材由压缩器兜底
+  // 常亮感知下限/上限（Loudness 百分比）：50-300，默认 100
+  static get PERC_MIN() { return 50; }   // 50% → 幅值 0.315（-10dB），用于压低过响素材
+  static get PERC_MAX() { return 300; }  // 幅值 6.24x（+16dB），正常内容无损，极端素材由压缩器兜底
 
-  /** 设置感知音量百分比（100-300） */
+  /** 设置感知音量百分比（50-300） */
   setBoost(percent) {
     this.boost = Math.max(AudioEngine.PERC_MIN, Math.min(AudioEngine.PERC_MAX, Math.round(percent)));
     this.apply();

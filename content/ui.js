@@ -103,7 +103,7 @@ class BoostUI {
 
     this._bindTrack();
 
-    // 刻度点击直达（500%→100% 五档）
+    // 刻度点击直达（300%→50% 六档，等感知等距）
     this.root.querySelectorAll('.bv-scale span').forEach((sp) => {
       sp.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -163,7 +163,7 @@ class BoostUI {
       e.stopPropagation();
       e.preventDefault();
       const next = this.engine.boost + (e.deltaY > 0 ? 5 : -5);
-      this.onBoostChange(Math.max(100, Math.min(500, next)));
+      this.onBoostChange(Math.max(50, Math.min(300, next)));
     }, { passive: false });
 
     // 面板展开态（鼠标进入时激活；离开时仅非拖动状态下收起）
@@ -179,7 +179,7 @@ class BoostUI {
   _setFromPointer(e) {
     const rect = this.track.getBoundingClientRect();
     const len = rect.height || 1;
-    const frac = (rect.bottom - e.clientY) / len; // 顶部=1 对应 500%，底部=0 对应 100%
+    const frac = (rect.bottom - e.clientY) / len; // 顶部=1 对应 300%，底部=0 对应 50%
     this._lastPct = this._posToPercent(Math.max(0, Math.min(1, frac)));
     this._sync();
     this.onBoostChange(this._lastPct);
@@ -193,13 +193,13 @@ class BoostUI {
     }
   }
 
-  /** 感知百分比 → 0..1 高度比（等感知线性：100→0、300→1） */
+  /** 感知百分比 → 0..1 高度比（等感知线性：50→0、300→1） */
   _fracFromPercent(p) {
-    return (p - 100) / 200;
+    return (p - 50) / 250;
   }
 
   _posToPercent(frac) {
-    return Math.round(100 + frac * 200);
+    return Math.round(50 + frac * 250);
   }
 
   _sync() {
@@ -318,17 +318,18 @@ class BoostUI {
   .bv-toast.bv-show { opacity: 1; }
 </style>
 <div class="bv-box">
-  <button class="bv-btn" title="音量增益 100%-300%（感知等量刻度，悬停弹出，Alt+↑/↓ 调节，滚轮微调）">
+  <button class="bv-btn" title="音量增益 50%-300%（感知等量刻度，默认 100%，悬停弹出，Alt+↑/↓ 调节，滚轮微调）">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3zm12.4 3a3.4 3.4 0 0 0-1.9-3.05v6.1A3.4 3.4 0 0 0 15.4 12z"/><path d="M14 4.9v2.2a5.4 5.4 0 0 1 0 9.8v2.2a7.6 7.6 0 0 0 0-14.2z"/></svg>
   </button>
   <div class="bv-panel">
     <div class="bv-body">
       <div class="bv-scale">
         <span style="bottom:100%">300%</span>
-        <span style="bottom:75%">250%</span>
-        <span style="bottom:50%">200%</span>
-        <span style="bottom:25%">150%</span>
-        <span style="bottom:0">100%</span>
+        <span style="bottom:80%">250%</span>
+        <span style="bottom:60%">200%</span>
+        <span style="bottom:40%">150%</span>
+        <span style="bottom:20%">100%</span>
+        <span style="bottom:0">50%</span>
       </div>
       <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>
     </div>
