@@ -86,8 +86,6 @@ function colorAt(x, y) {
   // 天线杆 + 天线球（顶部 V 型双天线）
   if (inSegment(x, y, 64, 30, 46, 12, 3)) return [0xff, 0xeb, 0xf1];
   if (inSegment(x, y, 64, 30, 82, 12, 3)) return [0xff, 0xeb, 0xf1];
-  if (inCircle(x, y, 46, 12, 5.5)) return [0xff, 0xeb, 0xf1];
-  if (inCircle(x, y, 82, 12, 5.5)) return [0xff, 0xeb, 0xf1];
 
   // 背景
   return bgColor(x, y);

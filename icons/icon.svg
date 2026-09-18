@@ -13,11 +13,9 @@
   <!-- 粉色渐变圆角底 -->
   <rect x="6" y="6" width="116" height="116" rx="26" fill="url(#bg)"/>
 
-  <!-- 顶部 V 型双天线（小电视标志） -->
+  <!-- 顶部 V 型双天线（小电视标志，圆角线，无球） -->
   <path d="M64 30 L46 12" stroke="#FFEBF1" stroke-width="6" stroke-linecap="round"/>
   <path d="M64 30 L82 12" stroke="#FFEBF1" stroke-width="6" stroke-linecap="round"/>
-  <circle cx="46" cy="12" r="5.5" fill="#FFEBF1"/>
-  <circle cx="82" cy="12" r="5.5" fill="#FFEBF1"/>
 
   <!-- 机身：白色小电视 -->
   <rect x="22" y="30" width="84" height="72" rx="16" fill="#FFFFFF"/>
