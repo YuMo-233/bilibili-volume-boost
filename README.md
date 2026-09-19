@@ -128,3 +128,7 @@ node scripts/gen-icons.js
 ## 开源协议
 
 [Apache License 2.0](LICENSE) © 2026 YuMo-233
+
+## 隐私政策
+
+不收集、不上传任何个人信息，无统计、无广告、无远程代码。详见 [PRIVACY.md](PRIVACY.md)。

@@ -164,12 +164,25 @@ function encodePNG(img, size) {
 }
 
 // ---------- 主流程 ----------
-const outDir = path.join(__dirname, '..', 'icons');
+// 用法：node scripts/gen-icons.js [尺寸...] [--out <目录>] [--name <前缀>]
+//   默认无参数 → 生成扩展所需的 16/32/48/128 到 icons/
+//   商店图标  → node scripts/gen-icons.js 300 --out dist/edge-store --name store-logo
+const argv = process.argv.slice(2);
+const outIdx = argv.indexOf('--out');
+const nameIdx = argv.indexOf('--name');
+const outDir = path.resolve(
+  outIdx >= 0 && argv[outIdx + 1] ? argv[outIdx + 1] : path.join(__dirname, '..', 'icons')
+);
+const prefix = nameIdx >= 0 && argv[nameIdx + 1] ? argv[nameIdx + 1] : 'icon';
+const sizes = argv.filter((a) => /^\d+$/.test(a)).map(Number);
+if (!sizes.length) sizes.push(16, 32, 48, 128);
+
 if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
-for (const size of [16, 32, 48, 128]) {
+for (const size of sizes) {
   const img = render(size);
   const png = encodePNG(img, size);
-  fs.writeFileSync(path.join(outDir, `icon-${size}.png`), png);
-  console.log(`icons/icon-${size}.png  (${png.length} bytes)`);
+  const file = path.join(outDir, `${prefix}-${size}.png`);
+  fs.writeFileSync(file, png);
+  console.log(`${file}  (${png.length} bytes)`);
 }
