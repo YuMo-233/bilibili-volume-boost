@@ -25,6 +25,11 @@
     button.danger:hover { background: #6d3333; }
     .tips { font-size: 11px; color: #9a9aa3; margin-top: 10px; padding: 8px 10px; background: #282830; border-radius: 6px; }
     .tips b { color: #d5d5d5; }
+    select {
+      background: #3a3a44; color: #e8e8e8; border: none; border-radius: 6px;
+      padding: 4px 8px; font-size: 12px; cursor: pointer; outline: none;
+    }
+    select:hover { background: #4a4a56; }
     /* switch */
     .switch { position: relative; width: 36px; height: 20px; }
     .switch input { opacity: 0; width: 0; height: 0; }
@@ -43,6 +48,23 @@
       <input type="checkbox" id="enabled">
       <span class="slider"></span>
     </label>
+  </div>
+
+  <div class="row">
+    <span>全屏显示醒目留言</span>
+    <label class="switch">
+      <input type="checkbox" id="scEnabled">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="row">
+    <span>SC 显示位置</span>
+    <select id="scPosition">
+      <option value="top-right">右上角</option>
+      <option value="top-left">左上角</option>
+      <option value="bottom-right">右下角</option>
+      <option value="bottom-left">左下角</option>
+    </select>
   </div>
 
   <div class="row">

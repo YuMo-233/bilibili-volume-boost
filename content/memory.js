@@ -1,12 +1,13 @@
 /**
  * UP 主记忆存储 — chrome.storage.local
  *
- * 结构（version 1）：
+ * 结构（version 2）：
  * {
- *   enabled: true,                    // 总开关
+ *   enabled: true,                    // 音量总开关
  *   bank: {
  *     "<mid>.<video|live>": { g: <增益 100-500>, t: <最后使用时间戳> }
- *   }
+ *   },
+ *   sc: { enabled: true, position: 'top-right' }   // 醒目留言浮层（docs/adr/0005）
  * }
  * 配额：视频记忆上限 1024 条、直播记忆上限 256 条（按类型分开，超出各自配额按
  * lastUsed 最旧淘汰）。记忆分桶：同一 UP 主视频/直播各一条（docs/adr/0002 分层模型配套）。
@@ -15,6 +16,8 @@ const MEM_KEY = 'volumeBank.v1';
 const MAX_VIDEO = 1024;             // 视频页记忆上限（用户指定）
 const MAX_LIVE = 256;               // 直播记忆上限（用户指定）
 const TOUCH_INTERVAL = 60 * 1000;   // LRU touch 节流：访问保活的最小写盘间隔
+const SC_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+const SC_DEFAULT = { enabled: true, position: 'top-right' }; // 醒目留言浮层默认配置
 
 const Memory = {
   /** 写操作串行队列：消除多个"读-改-写"副本互相覆盖的竞态 */
@@ -30,6 +33,7 @@ const Memory = {
     const data = d[MEM_KEY] || {};
     if (!data.bank) data.bank = {};
     if (typeof data.enabled !== 'boolean') data.enabled = true;
+    data.sc = this._normSc(data.sc);
     // v1 → v2 迁移：旧增益是幅值百分比(100-500)，改为感知刻度（当前范围 50-300），
     // 换算遵循 Stevens 幂律：新L = 100·(旧g/100)^0.6（见 docs/adr/0004），上限钳到 v2 时代上限 263
     if (!data.version || data.version < 2) {
@@ -83,6 +87,25 @@ const Memory = {
     await chrome.storage.local.set({ [MEM_KEY]: data });
   },
 
+  /** 醒目留言浮层配置归一化（开关 + 四角位置） */
+  _normSc(s) {
+    const src = s && typeof s === 'object' ? s : {};
+    return {
+      enabled: typeof src.enabled === 'boolean' ? src.enabled : SC_DEFAULT.enabled,
+      position: SC_POSITIONS.indexOf(src.position) >= 0 ? src.position : SC_DEFAULT.position
+    };
+  },
+
+  /** 更新醒目留言浮层配置（可只传部分字段） */
+  setSc(patch) {
+    return this._enqueue(async () => {
+      const data = await this.load();
+      data.sc = this._normSc(Object.assign({}, this._normSc(data.sc), patch || {}));
+      await chrome.storage.local.set({ [MEM_KEY]: data });
+      return data.sc;
+    });
+  },
+
   /** 判断记录类型：直播键形如 "uid.live" / "room:xxx.live"；其余视为视频键 */
   typeOf(key) {
     return key.endsWith('.live') ? 'live' : 'video';
@@ -101,8 +124,12 @@ const Memory = {
     collect(keys.filter((k) => this.typeOf(k) === 'live'), MAX_LIVE);
   },
 
+  /** 清空全部音量记忆（保留总开关与醒目留言浮层配置） */
   async clear() {
-    await chrome.storage.local.set({ [MEM_KEY]: { enabled: true, bank: {} } });
+    const data = await this.load();
+    await chrome.storage.local.set({
+      [MEM_KEY]: { version: 2, enabled: data.enabled, bank: {}, sc: this._normSc(data.sc) }
+    });
   }
 };
 

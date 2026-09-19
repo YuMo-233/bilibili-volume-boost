@@ -7,7 +7,8 @@
  * 3. 侦听 video 元素出现/重建，挂载音频增强引擎（重挂生命周期）
  * 4. 快捷键（Alt 组合键，防误触）
  * 5. UP 主记忆的读取/应用/写入（防抖 + LRU）
- * 6. popup 状态查询
+ * 6. 醒目留言浮层（仅直播页）：轮询取数 + 全屏显隐（docs/adr/0005）
+ * 7. popup 状态查询
  */
 (() => {
   'use strict';
@@ -118,6 +119,57 @@
     uiSync();
   }
 
+  // ---- 醒目留言浮层（仅直播页，见 docs/adr/0005） ----
+  let scFeed = null;
+  let scOverlay = null;
+  let scConfig = { enabled: true, position: 'top-right' };
+
+  /** 直播间号（URL 首段数字） */
+  function liveRoomId() {
+    const m = location.pathname.match(/^\/(\d+)/);
+    return m ? m[1] : null;
+  }
+
+  function scActive() {
+    return current.type === 'live' && scConfig.enabled && !!liveRoomId();
+  }
+
+  /**
+   * 保持浮层挂载 + 轮询运行，并按全屏状态显隐。
+   * 仅在沉浸全屏（Fullscreen API）下显示：全屏元素只渲染自身子树，
+   * 故浮层必须注入播放器内才可见（网页全屏/普通状态不显示，避免与原生公屏 SC 重复）。
+   */
+  function syncSC() {
+    if (!scActive()) {
+      if (scFeed && scFeed.running) scFeed.stop();
+      if (scOverlay) scOverlay.hide();
+      return;
+    }
+    if (!scFeed) {
+      scFeed = new SuperChatFeed({
+        onUpdate: (list) => { if (scOverlay) scOverlay.render(list); }
+      });
+    }
+    if (!scOverlay) {
+      scOverlay = new SuperChatOverlay((id) => scFeed.close(id));
+    }
+    scOverlay.setPosition(scConfig.position);
+    if (!scOverlay.isMounted()) scOverlay.mount(); // 播放器重建后自动重挂
+    scFeed.setRoom(liveRoomId());
+    if (!scFeed.running) scFeed.start();
+    if (document.fullscreenElement) scOverlay.show();
+    else scOverlay.hide();
+  }
+
+  function scState() {
+    return {
+      enabled: scConfig.enabled,
+      position: scConfig.position,
+      showing: !!(scOverlay && scOverlay.isShowing()),
+      count: scFeed ? scFeed.visible().length : 0
+    };
+  }
+
   // ---- 视频挂载 / 重挂 ----
   function findVideo() {
     const sel = current.type === 'video'
@@ -218,15 +270,22 @@
 
   // ---- 初始化 ----
   async function init() {
-    // 恢复总开关状态
+    // 恢复总开关与醒目留言配置
     try {
       const data = await Memory.load();
       enabled = data.enabled;
+      if (data.sc) scConfig = data.sc;
     } catch (_) {}
 
     window.addEventListener('bv_boost_up', onSniffEvent, false);
     document.addEventListener('pointerdown', () => engine.resumeOnUserGesture(), true);
     window.addEventListener('keydown', onKeyDown, true);
+    // 进出沉浸全屏 → 醒目留言浮层显隐（只监听，不介入全屏逻辑，见 docs/adr/0003）
+    document.addEventListener('fullscreenchange', () => {
+      syncSC();
+      // B 站进出全屏会重建播放器容器，延时补挂一次
+      setTimeout(() => syncSC(), 500);
+    }, true);
 
     // 侦听 video 元素重建与 DOM 变化（B 站切清晰度/切流会替换 video）
     const mo = new MutationObserver(() => onDomChange());
@@ -236,12 +295,17 @@
     domSniff();
     bindVideo();
     ensureUI();
+    syncSC();
 
-    // 存储变化联动（popup 切换总开关 / 清空记忆）
+    // 存储变化联动（popup 切换总开关 / 醒目留言开关与位置 / 清空记忆）
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local' && changes[MEM_KEY]) {
         const nv = changes[MEM_KEY].newValue || {};
         syncEnabled(typeof nv.enabled === 'boolean' ? nv.enabled : true);
+        if (nv.sc) {
+          scConfig = nv.sc;
+          syncSC();
+        }
       }
     });
 
@@ -254,6 +318,7 @@
           name: current.name,
           engine: engine.getState(),
           enabled,
+          sc: scState(),
           ok: true
         });
       }
@@ -268,7 +333,8 @@
           mid: current.mid, type: current.type, name: current.name,
           boost: engine.boost, engaged: engine.getState().engaged,
           lastApplied,
-          enabled: data.enabled, bank: data.bank
+          enabled: data.enabled, bank: data.bank,
+          sc: scState(), scCfg: data.sc
         }));
       } catch (e) {
         document.documentElement.setAttribute('data-bv-dbg', JSON.stringify({ err: String(e) }));
@@ -286,6 +352,7 @@
       bindVideo();
       ensureUI();
       applyMemoryGain();
+      syncSC();
     }, 2000);
   }
 
