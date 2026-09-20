@@ -50,7 +50,7 @@ class SuperChatOverlay {
     this.root = null;
     this.wrap = null;
     this.position = 'top-right';
-    this._cards = new Map();   // id -> { wrap, card, fill, data, pct }
+    this._cards = new Map();   // id -> { wrap, card, fill, data, scale }
     this._moreEl = null;
     this._shown = false;
     this._raf = null;
@@ -218,12 +218,12 @@ class SuperChatOverlay {
     const bar = document.createElement('div');
     bar.className = 'bv-sc-bar';
     const fill = document.createElement('i');
-    fill.style.width = '0%';
+    fill.style.transform = 'scaleX(0)';
     bar.appendChild(fill);
     card.appendChild(bar);
 
     wrap.appendChild(card);
-    return { wrap, card, fill, data: it, pct: -1 };
+    return { wrap, card, fill, data: it, scale: -1 };
   }
 
   /** 已有卡片只更新会变的字段（配色、头像、价格、留言） */
@@ -318,7 +318,7 @@ class SuperChatOverlay {
     return `linear-gradient(180deg, ${light} 0%, ${light}66 14%, ${deep} 38%, ${deep} 100%)`;
   }
 
-  /** 逐帧插值：进度条平滑推进，而非每秒跳一格 */
+  /** 逐帧循环：仅在浮层显示期间运行 */
   _startTick() {
     if (this._raf) return;
     const loop = () => {
@@ -335,6 +335,14 @@ class SuperChatOverlay {
     }
   }
 
+  /**
+   * 逐帧插值：进度条平滑推进，而非每秒跳一格。
+   *
+   * 用 transform: scaleX() 而不是 width —— width 是布局属性，每帧触发 layout，
+   * 且浏览器会把宽度吸附到整数像素。SC 悬挂时长普遍很长（实测 1000 元档约 932 秒），
+   * 320px 的进度条每秒只推进约 0.34px，被吸附后表现为"每 3 秒跳 1 像素"，
+   * 无论采样多密都顿。scaleX 是合成器属性、不做像素吸附，可真正亚像素平滑。
+   */
   _tick() {
     if (!this.wrap) return;
     const now = Date.now() / 1000;
@@ -344,11 +352,11 @@ class SuperChatOverlay {
       const total = it.endTime - it.startTime;
       if (!rec.fill || !total) continue;
       const ratio = Math.max(0, Math.min(1, (it.endTime - now) / total));
-      const pct = ratio * 100;
-      // 变化不足 0.05% 不写样式，省掉无意义的逐帧重排
-      if (Math.abs(pct - rec.pct) < 0.05) continue;
-      rec.pct = pct;
-      rec.fill.style.width = `${pct.toFixed(2)}%`;
+      // 六位小数 ≈ 0.0003px 空间精度：即使 2 小时档的 SC 也能逐帧生效
+      const scale = Number(ratio.toFixed(6));
+      if (scale === rec.scale) continue;
+      rec.scale = scale;
+      rec.fill.style.transform = `scaleX(${scale})`;
     }
 
     // 过期清扫每秒至多一次，让悬挂到点的卡片及时播退场动画
@@ -432,6 +440,9 @@ class SuperChatOverlay {
   }
   .bv-sc-bar > i {
     display: block; height: 100%;
+    /* 从左侧展开；will-change 使其独立成合成层，变换不走布局与重绘 */
+    transform-origin: left center;
+    will-change: transform;
     background: rgba(255,255,255,.85);
   }
   .bv-sc-more {
