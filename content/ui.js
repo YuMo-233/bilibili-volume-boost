@@ -27,6 +27,11 @@ class BoostUI {
     this._toastTimer = null;
     this._dragId = null;
     this._lastPct = null;
+    this.type = null;        // 当前适配的页面类型（video / live）
+    this._revealed = false;  // 控件就绪闩锁：就绪前 UI 隐藏且不可交互（见 docs/adr/0006）
+    this._anchorSig = null;  // 锚点位置签名，用于「连续两次采样一致」比对
+    this._since = 0;         // 挂载时刻，兜底放行计时起点
+    this._settleTimer = null;
   }
 
   /** 控制栏注入点（回退序列） */
@@ -49,6 +54,12 @@ class BoostUI {
       live: ['.web-player-icon-volume', '.webplayer-volume', '.web-player-controller-right [class*="Volume"], .web-player-controller-right [class*="volume"]']
     };
   }
+
+  /** 控件就绪：锚点位置两次采样的间隔（首次采样后主动补一次，避免依赖 2 秒轮询） */
+  static get SETTLE_MS() { return 300; }
+
+  /** 控件就绪：锚点始终不出现时的兜底放行时限 */
+  static get FALLBACK_MS() { return 5000; }
 
   findSlot(type) {
     const list = BoostUI.SLOT_SELECTORS[type] || [];
@@ -73,16 +84,69 @@ class BoostUI {
   }
 
   /**
-   * 位置纠正：B 站播放器初始化时序导致第一次注入时音量按钮可能尚未渲染，
-   * 宿主会先落到控制栏末尾。此方法在音量按钮出现后把宿主挪到它"旁边"。
+   * 位置纠正 + 控件就绪判定（见 docs/adr/0006）：
+   * - 锚点出现后把宿主挪到它"旁边"（B 站初始化时序兜底）
+   * - 宿主被移动后必须清理悬停残留，否则面板会永久展开
+   * - 判定就绪（锚点可见且位置连续两次一致）后才显示；锚点 5 秒不出现则兜底放行
    */
   relocate(type) {
     if (!this.isMounted()) return;
+    this.type = type;
     const anchor = this.findAnchor(type);
-    if (!anchor || !anchor.parentNode) return;
-    if (this.host.previousElementSibling !== anchor) {
-      anchor.parentNode.insertBefore(this.host, anchor.nextSibling);
+
+    if (anchor && anchor.parentNode) {
+      if (this.host.previousElementSibling !== anchor) {
+        anchor.parentNode.insertBefore(this.host, anchor.nextSibling);
+        this._clearHover();      // 位置变更 → 清悬停残留
+        this._anchorSig = null;  // 位置已变，稳定性需重新采样
+      }
+      this._updateReadiness(anchor);
+    } else if (!this._revealed && Date.now() - this._since >= BoostUI.FALLBACK_MS) {
+      this._revealed = true;     // 锚点始终不出现：兜底放行（宿主仍在控制栏末尾）
     }
+
+    this._applyVisibility();
+  }
+
+  /** 就绪判定：锚点可见且位置连续两次采样一致 → 放行（一次性闩锁，不再回退） */
+  _updateReadiness(anchor) {
+    if (this._revealed) return;
+    const r = anchor.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) {
+      // 锚点尚不可见（display:none / 未布局）时 rect 恒为 0，不能当成"位置稳定"
+      this._anchorSig = null;
+      return;
+    }
+    const sig = `${Math.round(r.left)},${Math.round(r.top)}`;
+    if (this._anchorSig === sig) {
+      this._revealed = true;
+      return;
+    }
+    this._anchorSig = sig;
+    this._scheduleSettleCheck();
+  }
+
+  /** 首次采样后主动补一次复核，把就绪延迟压到 SETTLE_MS，而非等下一次 2 秒轮询 */
+  _scheduleSettleCheck() {
+    if (this._settleTimer || this._revealed || !this.type) return;
+    this._settleTimer = setTimeout(() => {
+      this._settleTimer = null;
+      this.relocate(this.type);
+    }, BoostUI.SETTLE_MS);
+  }
+
+  /** 就绪前隐藏且不可交互；隐藏作用于 .bv-box，toast 是 shadow root 内的兄弟节点不受影响 */
+  _applyVisibility() {
+    const box = this._box();
+    if (box) box.classList.toggle('bv-pending', !this._revealed);
+    if (this.host) this.host.style.pointerEvents = this._revealed ? 'auto' : 'none';
+  }
+
+  /** 清理悬停残留：元素在鼠标静止时被移动，浏览器不会补发 mouseleave，.bv-open 会永久残留 */
+  _clearHover() {
+    const box = this._box();
+    if (box) box.classList.remove('bv-open');
+    this._dragId = null;
   }
 
   mount(type) {
@@ -92,7 +156,7 @@ class BoostUI {
 
     this.host = document.createElement('div');
     this.host.id = 'bv-boost-host';
-    this.host.style.cssText = 'all:initial;display:inline-flex;align-items:center;margin-left:2px;position:relative;user-select:none;-webkit-user-select:none;touch-action:none;';
+    this.host.style.cssText = 'all:initial;display:inline-flex;align-items:center;margin-left:2px;position:relative;user-select:none;-webkit-user-select:none;touch-action:none;pointer-events:none;';
     this.root = this.host.attachShadow({ mode: 'closed' });
     this.root.innerHTML = this._template();
     this.track = this.root.querySelector('.bv-track');
@@ -112,13 +176,17 @@ class BoostUI {
       });
     });
 
-    // 插入到 B 站音量按钮旁（其后），否则追加到控制栏容器末尾
+    // 插入到 B 站音量按钮旁（其后），否则先追加到控制栏容器末尾，等锚点出现再挪
     const anchor = this.findAnchor(type);
     if (anchor && anchor.parentNode) {
       anchor.parentNode.insertBefore(this.host, anchor.nextSibling);
     } else {
       slot.appendChild(this.host);
     }
+
+    this.type = type;
+    this._since = Date.now();
+    this._applyVisibility(); // 控件就绪前保持隐藏且不可交互（见 docs/adr/0006）
 
     this._sync();
     return true;
@@ -228,10 +296,17 @@ class BoostUI {
    */
   _debugState() {
     if (!this.host) return;
-    this.host.setAttribute('data-bv-state', JSON.stringify(this.engine.getState()));
+    const state = Object.assign({ revealed: this._revealed }, this.engine.getState());
+    this.host.setAttribute('data-bv-state', JSON.stringify(state));
   }
 
   unmount() {
+    if (this._settleTimer) {
+      clearTimeout(this._settleTimer);
+      this._settleTimer = null;
+    }
+    this._revealed = false;
+    this._anchorSig = null;
     if (this.host) {
       this.host.remove();
       this.host = null;
@@ -251,6 +326,8 @@ class BoostUI {
     position: relative; cursor: pointer; transition: background .15s;
   }
   .bv-box:hover, .bv-box.bv-open { background: rgba(255,255,255,.14); }
+  /* 控件就绪前隐藏：不可见也不可悬停，避免加载期落在错误位置被误触（见 docs/adr/0006） */
+  .bv-box.bv-pending { visibility: hidden; }
   .bv-btn {
     border: none; background: none; padding: 0; margin: 0;
     width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
