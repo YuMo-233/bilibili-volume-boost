@@ -44,6 +44,8 @@ class BoostDislike {
     this._cards = new Map();    // card 元素 -> { ui, info }
     this._reported = new Set(); // 已上报的 bvid（会话内去重）
     this._running = false;
+    this._raf = null;
+    this._onViewport = () => this.scheduleReposition();
   }
 
   /** 未登录（缺少 csrf）时不注入按钮 */
@@ -58,10 +60,19 @@ class BoostDislike {
 
   start() {
     this._running = true;
+    // 布局变化时对齐 slot 位置（用 capture 以覆盖内部滚动容器）
+    window.addEventListener('scroll', this._onViewport, { passive: true, capture: true });
+    window.addEventListener('resize', this._onViewport, { passive: true });
   }
 
   stop() {
     this._running = false;
+    window.removeEventListener('scroll', this._onViewport, { capture: true });
+    window.removeEventListener('resize', this._onViewport);
+    if (this._raf) {
+      cancelAnimationFrame(this._raf);
+      this._raf = null;
+    }
     this._clearAll();
   }
 
@@ -103,6 +114,27 @@ class BoostDislike {
       });
       if (ui.mount()) this._cards.set(card, { ui, info });
     }
+
+    // 布局可能已变化（图片加载、换一换、内容展开），下一帧统一对齐
+    this.scheduleReposition();
+  }
+
+  /**
+   * rAF 节流的整体重定位：先批量只读测量、再批量写入，
+   * 同一帧内最多执行一次，避免逐卡读写交替触发反复重排。
+   */
+  scheduleReposition() {
+    if (this._raf) return;
+    this._raf = requestAnimationFrame(() => {
+      this._raf = null;
+      if (!this._running || !this._cards.size) return;
+      const batch = [];
+      for (const [, rec] of this._cards) {
+        const g = rec.ui.measure();                 // 只读
+        if (g) batch.push([rec.ui, g]);
+      }
+      for (const [ui, g] of batch) ui.applyGeometry(g); // 只写
+    });
   }
 
   /** 清空已注入的全部 UI（未登录或停止时） */
