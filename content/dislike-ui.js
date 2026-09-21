@@ -9,8 +9,12 @@
  *   标题 14px、说明 12px；「撤销」按钮底色 rgba(24,26,27,.2)、圆角 6px、
  *   内边距 6px 12px、字号 13px、色 rgb(232,230,227)，带 24px 回退箭头
  *
- * 交互（与原生一致）：鼠标移到 ⋮ 上弹出菜单 → 点击条目即上报 → 卡片原位覆盖撤销浮层。
- * 浮层覆盖在原卡片位置而非移除卡片，因此不产生列表跳动（见 ADR-0008）。
+ * 交互（与原生一致）：鼠标移到 ⋮ 上弹出菜单 → 点击条目即上报 → 卡片原位进入已反馈态。
+ * 已反馈态严格对齐原生三件事（见文件末 TEMPLATE 与 markReported）：
+ * 1) 封面磨砂：封面图外层 `filter: blur(20px)`，带 .3s 过渡
+ * 2) 浮层只盖封面：绝对定位贴封面矩形，底色 rgba(24,26,27,.4)、圆角 6px，透明度 .3s 淡入
+ * 3) 标题信息区隐藏：`.info` 置 visibility:hidden（原生是整块不再渲染）
+ * 因详情页推荐卡是横版、封面仅 141×80，浮层内容按封面尺寸等比缩小并改为竖向堆叠。
  *
  * 公共接口（dislike.js 依赖）：
  *   new DislikeCardUI(card, info, { onReport, onCancel })
@@ -59,6 +63,9 @@ class DislikeCardUI {
     this._hideTimer = null;
     this._toastTimer = null;
     this._reported = null;                                 // null | reasonId
+    this._blurTarget = null;                               // 当前被磨砂的封面元素
+    this._prevFilter = '';                                 // 磨砂前的 inline filter（撤销时还原）
+    this._prevTransition = '';                             // 磨砂前的 inline transition
   }
 
   isMounted() {
@@ -93,6 +100,7 @@ class DislikeCardUI {
   unmount() {
     clearTimeout(this._hideTimer);
     clearTimeout(this._toastTimer);
+    this._applyFeedback(false); // 还原封面磨砂与信息区可见性，避免留下副作用
     if (this.host) {
       this.host.remove();
       this.host = null;
@@ -148,20 +156,69 @@ class DislikeCardUI {
     this._overlay.addEventListener('pointerdown', (e) => e.stopPropagation());
   }
 
-  /** 展示已上报浮层（覆盖卡片原位，不移动列表） */
+  /** 展示已反馈态：封面磨砂 + 浮层只盖封面 + 隐藏标题信息区（严格对齐原生） */
   markReported(reasonId) {
     this._reported = reasonId;
     const item = DislikeCardUI.ITEMS.find((it) => it.reasonId === reasonId);
     const title = this.root.querySelector('.bv-dl-ov-title');
     if (title) title.textContent = item ? item.title : '内容不感兴趣';
+
+    this._applyFeedback(true);
     this._menu.classList.remove('bv-show');
     this._overlay.classList.add('bv-show');
   }
 
-  /** 撤销后隐藏浮层，卡片恢复原状 */
+  /** 撤销后恢复卡片原状 */
   clearReported() {
     this._reported = null;
+    this._applyFeedback(false);
     this._overlay.classList.remove('bv-show');
+  }
+
+  /**
+   * 进入 / 退出已反馈态：
+   * - 封面磨砂：给封面图外层加 `filter: blur(20px)`（原生同款，带 .3s 过渡）
+   * - 浮层几何：按封面矩形写 left/top/width/height（浮层只盖封面）
+   * - 隐藏信息区：`.info` 置 visibility:hidden（原生整块不再渲染；此处保位以免列表跳动）
+   * - 撤下 ⋮：原生上报后卡片不再提供该入口
+   */
+  _applyFeedback(on) {
+    if (on) {
+      const picBox = this.card.querySelector('.pic-box');
+      if (picBox) {
+        const cr = this.card.getBoundingClientRect();
+        const br = picBox.getBoundingClientRect();
+        this._overlay.style.left = `${Math.round(br.left - cr.left)}px`;
+        this._overlay.style.top = `${Math.round(br.top - cr.top)}px`;
+        this._overlay.style.width = `${Math.round(br.width)}px`;
+        this._overlay.style.height = `${Math.round(br.height)}px`;
+      }
+    }
+
+    // 封面磨砂：目标取封面图外层（.framepreview-box 覆盖图片与预览视频），退回 img
+    const pic = this.card.querySelector('.pic-box .pic');
+    const target = pic ? (pic.querySelector('.framepreview-box') || pic.querySelector('img')) : null;
+    if (on) {
+      if (target && !this._blurTarget) {
+        this._blurTarget = target;
+        this._prevFilter = target.style.filter;
+        this._prevTransition = target.style.transition;
+      }
+      if (this._blurTarget) {
+        this._blurTarget.style.transition = 'filter .3s';
+        this._blurTarget.style.filter = 'blur(20px)';
+      }
+    } else if (this._blurTarget) {
+      this._blurTarget.style.filter = this._prevFilter || '';
+      this._blurTarget.style.transition = this._prevTransition || '';
+      this._blurTarget = null;
+    }
+
+    const info = this.card.querySelector('.info');
+    if (info) info.style.visibility = on ? 'hidden' : '';
+
+    const pop = this.root ? this.root.querySelector('.bv-dl-pop') : null;
+    if (pop) pop.style.display = on ? 'none' : '';
   }
 
   toast(text) {
@@ -240,43 +297,48 @@ class DislikeCardUI {
         }
         .bv-dl-item:hover { background: rgb(31, 34, 35); color: rgb(232, 230, 227); }
 
-        /* 撤销浮层：覆盖卡片原位，底色 rgba(24,26,27,.4)、圆角 6px */
+        /* 撤销浮层：严格照搬原生——只盖封面，底色 rgba(24,26,27,.4)、圆角 6px、
+           透明度 .3s 淡入；尺寸/位置由 markReported 按封面矩形写入 inline style */
         .bv-dl-overlay {
           position: absolute;
-          inset: 0;
+          left: 0;
+          top: 0;
           display: flex;
           align-items: center;
           justify-content: center;
-          gap: 24px;
           background: rgba(24, 26, 27, .4);
           border-radius: 6px;
           color: rgb(232, 230, 227);
+          overflow: hidden;
           opacity: 0;
           visibility: hidden;
-          transition: opacity .2s, visibility .2s;
+          transition: opacity .3s;
           pointer-events: none;
+          z-index: 2;
         }
         .bv-dl-overlay.bv-show { opacity: 1; visibility: visible; pointer-events: auto; }
-        .bv-dl-ov-left { display: flex; align-items: center; gap: 10px; }
-        .bv-dl-ov-left svg { flex: 0 0 auto; width: 30px; height: 30px; }
-        .bv-dl-ov-text { display: flex; flex-direction: column; gap: 2px; }
-        .bv-dl-ov-title { font: 400 14px/1.4 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
-        .bv-dl-ov-desc { font: 400 12px/1.4 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; opacity: .85; }
+        /* 封面尺寸小，内容按比例缩小并改为竖向堆叠（原生为左列+右按钮的横排） */
+        .bv-dl-ov-inner { display: flex; flex-direction: column; align-items: center; }
+        .bv-dl-ov-inner > svg { width: 22px; height: 22px; margin-bottom: 2px; }
+        .bv-dl-ov-title { font: 400 11px/14px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+        .bv-dl-ov-desc { font: 400 10px/12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; opacity: .6; }
 
-        /* 撤销按钮：底色 rgba(24,26,27,.2)、圆角 6px、内边距 6px 12px、字号 13px */
+        /* 撤销按钮：底色 rgba(24,26,27,.2)、圆角 6px、白字（原生内边距 6px 12px 按比例缩小） */
         .bv-dl-revert {
           display: flex;
           align-items: center;
-          gap: 4px;
-          flex: 0 0 auto;
-          padding: 6px 12px;
+          justify-content: center;
+          gap: 3px;
+          margin-top: 4px;
+          padding: 3px 8px;
           background: rgba(24, 26, 27, .2);
           border-radius: 6px;
-          font: 400 13px/1 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+          font: 400 11px/1 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
           color: rgb(232, 230, 227);
           cursor: pointer;
           transition: background-color .2s;
         }
+        .bv-dl-revert svg { width: 13px; height: 13px; }
         .bv-dl-revert:hover { background: rgba(24, 26, 27, .45); }
 
         /* 轻提示：仅用于失败反馈（成功路径由撤销浮层承担，与原生一致） */
@@ -305,14 +367,12 @@ class DislikeCardUI {
       </div>
 
       <div class="bv-dl-overlay">
-        <div class="bv-dl-ov-left">
+        <div class="bv-dl-ov-inner">
           ${frown}
-          <div class="bv-dl-ov-text">
-            <span class="bv-dl-ov-title">内容不感兴趣</span>
-            <span class="bv-dl-ov-desc">将减少此类内容推荐</span>
-          </div>
+          <span class="bv-dl-ov-title">内容不感兴趣</span>
+          <span class="bv-dl-ov-desc">将减少此类内容推荐</span>
+          <div class="bv-dl-revert">${revertIcon}撤销</div>
         </div>
-        <div class="bv-dl-revert">${revertIcon}撤销</div>
       </div>
 
       <div class="bv-dl-toast"></div>
