@@ -170,6 +170,32 @@
     };
   }
 
+  // ---- 相关推荐「不感兴趣」（仅视频详情页，见 docs/adr/0008） ----
+  const dislike = new BoostDislike();
+
+  function syncDislike() {
+    // 总开关关闭时一并撤下注入（本功能无独立开关，随总开关联动）
+    if (!enabled) {
+      if (dislike._running) dislike.stop();
+      return;
+    }
+    if (current.type === 'video') {
+      if (!dislike._running) dislike.start();
+      dislike.refresh(); // 新增卡片注入 / 失效卡片清理（含未登录与去重判定）
+    } else if (dislike._running) {
+      dislike.stop();
+    }
+  }
+
+  function dislikeState() {
+    return {
+      running: dislike._running,
+      loggedIn: dislike.isLoggedIn(),
+      cards: dislike._cards.size,
+      reported: Array.from(dislike._reported)
+    };
+  }
+
   // ---- 视频挂载 / 重挂 ----
   function findVideo() {
     const sel = current.type === 'video'
@@ -199,6 +225,7 @@
     domSniff();
     bindVideo();
     ensureUI();
+    syncDislike();
   }
 
   // ---- 快捷键 ----
@@ -266,6 +293,7 @@
     } else {
       bindVideo();
     }
+    syncDislike();
   }
 
   // ---- 初始化 ----
@@ -296,6 +324,7 @@
     bindVideo();
     ensureUI();
     syncSC();
+    syncDislike();
 
     // 存储变化联动（popup 切换总开关 / 醒目留言开关与位置 / 清空记忆）
     chrome.storage.onChanged.addListener((changes, area) => {
@@ -334,7 +363,8 @@
           boost: engine.boost, engaged: engine.getState().engaged,
           lastApplied,
           enabled: data.enabled, bank: data.bank,
-          sc: scState(), scCfg: data.sc
+          sc: scState(), scCfg: data.sc,
+          dislike: dislikeState()
         }));
       } catch (e) {
         document.documentElement.setAttribute('data-bv-dbg', JSON.stringify({ err: String(e) }));
@@ -353,6 +383,7 @@
       ensureUI();
       applyMemoryGain();
       syncSC();
+      syncDislike();
     }, 2000);
   }
 
