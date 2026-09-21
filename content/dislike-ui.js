@@ -134,6 +134,10 @@ class DislikeCardUI {
     this._hideTimer = null;
     this._toastTimer = null;
     this._reported = null;                                 // null | reasonId
+    this._popHover = false;                                // 指针是否停在 ⋮ 或菜单上
+    this._unhoverTimer = null;                             // 离开卡片后收起 ⋮ 的延迟
+    this._onCardEnter = null;
+    this._onCardLeave = null;
     this._blurTarget = null;                               // 当前被磨砂的封面元素
     this._prevFilter = '';                                 // 磨砂前的 inline filter（撤销时还原）
     this._prevTransition = '';                             // 磨砂前的 inline transition
@@ -171,6 +175,15 @@ class DislikeCardUI {
   unmount() {
     clearTimeout(this._hideTimer);
     clearTimeout(this._toastTimer);
+    clearTimeout(this._unhoverTimer);
+    // 摘掉卡片上的监听，避免宿主节点留存悬挂引用
+    if (this.card && this._onCardEnter) {
+      this.card.removeEventListener('mouseenter', this._onCardEnter);
+      this.card.removeEventListener('mouseleave', this._onCardLeave);
+    }
+    this._onCardEnter = null;
+    this._onCardLeave = null;
+    this._popHover = false;
     this._applyFeedback(false); // 还原封面磨砂与信息区可见性，不留副作用
     if (this.slot) {
       this.slot.remove();
@@ -245,18 +258,37 @@ class DislikeCardUI {
     this.applyGeometry(this.measure());
   }
 
-  /** 交互绑定：hover 展开菜单、点击条目上报、撤销回退 */
+  /**
+   * 交互绑定：
+   * - 鼠标移到卡片上才显形 ⋮（原生行为），移出后延迟收起
+   * - 悬停 ⋮ 展开菜单（鼠标移入菜单时因是子节点不会触发 mouseleave）
+   * - 点击条目上报、点撤销回退
+   */
   _bind() {
     const pop = this.slot.querySelector('.bv-dl-pop');
     const items = this.slot.querySelectorAll('.bv-dl-item');
 
+    // 卡片 hover → 显形/隐藏 ⋮（只加监听，不改宿主 DOM 结构）
+    this._onCardEnter = () => {
+      clearTimeout(this._unhoverTimer);
+      this._setHover(true);
+    };
+    this._onCardLeave = () => this._scheduleUnhover();
+    this.card.addEventListener('mouseenter', this._onCardEnter);
+    this.card.addEventListener('mouseleave', this._onCardLeave);
+
     pop.addEventListener('mouseenter', () => {
+      this._popHover = true;
       clearTimeout(this._hideTimer);
+      clearTimeout(this._unhoverTimer);
+      this._setHover(true);
       if (this._reported === null) this._menu.classList.add('bv-show');
     });
     pop.addEventListener('mouseleave', () => {
+      this._popHover = false;
       // 延迟收起：鼠标从 ⋮ 移向菜单的途中不闪断
       this._hideTimer = setTimeout(() => this._menu.classList.remove('bv-show'), DislikeCardUI.HIDE_DELAY);
+      this._scheduleUnhover();
     });
 
     items.forEach((el) => {
@@ -286,6 +318,19 @@ class DislikeCardUI {
 
     pop.addEventListener('pointerdown', (e) => e.stopPropagation());
     this._overlay.addEventListener('pointerdown', (e) => e.stopPropagation());
+  }
+
+  /** 离开卡片后延迟收起 ⋮；指针停在 ⋮ 或菜单上时不收 */
+  _scheduleUnhover() {
+    clearTimeout(this._unhoverTimer);
+    this._unhoverTimer = setTimeout(() => {
+      if (!this._popHover) this._setHover(false);
+    }, DislikeCardUI.HIDE_DELAY);
+  }
+
+  /** 切换 ⋮ 显隐（走 class，样式在图层里） */
+  _setHover(on) {
+    if (this.slot) this.slot.classList.toggle('bv-hover', !!on);
   }
 
   /** 展示已反馈态：封面磨砂 + 浮层只盖封面 + 隐藏标题信息区（严格对齐原生） */
@@ -363,7 +408,8 @@ class DislikeCardUI {
       /* 每张卡片一个 slot：绝对定位到卡片矩形，本身不拦指针 */
       .bv-dl-slot { position: absolute; pointer-events: none; overflow: visible; }
 
-      /* ⋮ 按钮 + 弹出菜单的 hover 容器（贴卡片右下角，与播放量行齐平） */
+      /* ⋮ 按钮 + 弹出菜单的 hover 容器（贴卡片右下角，与播放量行齐平）
+         与原生一致：默认隐藏，鼠标移到卡片上才显形（见 _bind 的卡片 hover 监听） */
       .bv-dl-pop {
         position: absolute;
         right: 2px;
@@ -377,8 +423,11 @@ class DislikeCardUI {
         color: rgb(167, 160, 148);
         cursor: pointer;
         pointer-events: auto;
-        transition: background-color .2s, color .2s;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity .2s, visibility .2s, background-color .2s, color .2s;
       }
+      .bv-dl-slot.bv-hover .bv-dl-pop { opacity: 1; visibility: visible; }
       .bv-dl-pop:hover { color: rgb(232, 230, 227); background: rgba(255, 255, 255, .08); }
       .bv-dl-pop svg { display: block; }
 
