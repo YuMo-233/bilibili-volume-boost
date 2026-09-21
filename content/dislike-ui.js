@@ -498,11 +498,38 @@ class DislikeCardUI {
  *   measure() / applyGeometry(g) / setOn(bool)
  */
 class VideoDislikeToggle {
-  /** 控件宽度（含图标与文字） */
-  static get WIDTH() { return 82; }
+  /** 目标宽度：与原生项同宽（原生每项 92 + 右边距 8 = 步距 100） */
+  static get DESIRED_W() { return 92; }
 
-  /** 与原生项一致的右侧间距 */
+  /** 与原生项一致的间距 */
   static get GAP() { return 8; }
+
+  /** 余量下限：低于此值宁可不显示，避免挤压原生布局 */
+  static get MIN_BUDGET() { return 46; }
+
+  /**
+   * 尺寸档位（icon 像素 / 文字像素，font=0 表示仅图标）。
+   * 操作栏余量随窗口宽度变化，按实测余量选最大可用档，保证绝不溢出。
+   */
+  static get TIERS() {
+    return [
+      { icon: 24, font: 13 },   // 余量充裕：与原生项同规格
+      { icon: 22, font: 12 },
+      { icon: 20, font: 11 },
+      { icon: 20, font: 0 }     // 余量不足：退化为仅图标
+    ];
+  }
+
+  /** 按可用宽度选档；内容宽度估算 = 图标 + 间隔 + 4 个汉字 */
+  static pickTier(budget) {
+    const tiers = VideoDislikeToggle.TIERS;
+    for (let i = 0; i < tiers.length; i++) {
+      const t = tiers[i];
+      const need = t.icon + (t.font ? 4 + t.font * 4 : 0);
+      if (need <= budget) return i;
+    }
+    return tiers.length - 1;
+  }
 
   /** 激活色（B 站品牌蓝，点赞激活同色） */
   static get ON_COLOR() { return 'rgb(0, 174, 236)'; }
@@ -516,11 +543,14 @@ class VideoDislikeToggle {
     this.onToggle = handlers.onToggle;  // (nextOn) => Promise<boolean>
     this.slot = null;
     this._el = null;
+    this._icon = null;
+    this._text = null;
     this._toastEl = null;
     this._on = false;
     this._busy = false;
     this._geo = '';
-    this._marginSet = '';               // 已写入第 2 项的 margin-left（Vue 重置后需重写）
+    this._marginPx = 0;                 // 已写入第 2 项的 margin-left
+    this._tier = -1;                    // 当前尺寸档
     this._toastTimer = null;
   }
 
@@ -531,7 +561,7 @@ class VideoDislikeToggle {
   mount() {
     if (this.isMounted()) return true;
     if (!document.body) return false;
-    if (!this._makeRoom()) return false;   // 找不到操作栏则先不挂
+    if (!this._items()) return false;   // 操作栏未就绪则先不挂
 
     const root = DislikeLayer.acquire();
     this.slot = document.createElement('div');
@@ -540,24 +570,34 @@ class VideoDislikeToggle {
     root.appendChild(this.slot);
 
     this._el = this.slot.querySelector('.bv-dl-toggle');
+    this._icon = this.slot.querySelector('.bv-dl-toggle-icon');
+    this._text = this.slot.querySelector('.bv-dl-toggle-text');
     this._toastEl = this.slot.querySelector('.bv-dl-toggle-toast');
     this._el.addEventListener('click', (e) => this._onClick(e));
     this._el.addEventListener('pointerdown', (e) => e.stopPropagation());
 
-    this.reposition();
+    const g = this.measure();
+    if (!g) {                            // 余量不足：不留残留
+      this.unmount();
+      return false;
+    }
+    this.applyGeometry(g);
     return true;
   }
 
   unmount() {
     clearTimeout(this._toastTimer);
-    this._releaseRoom();
+    this._releaseMargin();
     if (this.slot) {
       this.slot.remove();
       this.slot = null;
       this._el = null;
+      this._icon = null;
+      this._text = null;
       this._toastEl = null;
     }
     this._geo = '';
+    this._tier = -1;
     this._on = false;
     DislikeLayer.release();
   }
@@ -569,52 +609,74 @@ class VideoDislikeToggle {
     return main;
   }
 
-  /** 给第 2 项（投币）加左边距，让出控件位置 */
-  _makeRoom() {
-    const main = this._items();
-    if (!main) return false;
-    const want = `${VideoDislikeToggle.WIDTH + VideoDislikeToggle.GAP}px`;
-    if (this._marginSet !== want) {
-      main.children[1].style.marginLeft = want;
-      this._marginSet = want;
-    }
-    return true;
-  }
-
   /** 归还让位（卸载时还原原生布局） */
-  _releaseRoom() {
+  _releaseMargin() {
     const main = this._items();
-    if (main && this._marginSet) main.children[1].style.marginLeft = '';
-    this._marginSet = '';
+    if (main && this._marginPx) main.children[1].style.marginLeft = '';
+    this._marginPx = 0;
   }
 
-  /** 只读测量：定位在点赞项右侧让出的空位上 */
+  /**
+   * 只读测量：算出操作栏真实余量，据此定控件宽度与尺寸档。
+   * 余量 = 容器宽 − 左组宽（不含本已占的让位边距）− 右组宽。
+   */
   measure() {
     if (!this.slot) return null;
+    const tc = document.querySelector('.video-toolbar-container');
+    const left = document.querySelector('.video-toolbar-left');
+    const right = document.querySelector('.video-toolbar-right');
     const main = this._items();
-    if (!main) return null;
-    // Vue 重渲染可能抹掉让位边距，这里按需重写
-    this._makeRoom();
+    if (!tc || !left || !right || !main) return null;
+
     const r1 = main.children[0].getBoundingClientRect();
     if (r1.width <= 0 || r1.height <= 0) return null;
+
+    const baseLeft = left.offsetWidth - this._marginPx;
+    const slack = Math.max(0, tc.clientWidth - baseLeft - right.offsetWidth);
+    const budget = Math.max(0, slack - VideoDislikeToggle.GAP);
+    if (budget < VideoDislikeToggle.MIN_BUDGET) return null;   // 宁可不显示
+
+    const tier = VideoDislikeToggle.pickTier(budget);
+    const w = Math.min(budget, VideoDislikeToggle.DESIRED_W);
     const br = document.body.getBoundingClientRect();
     return {
       left: Math.round(r1.right - br.left) + VideoDislikeToggle.GAP,
       top: Math.round(r1.top - br.top),
-      w: VideoDislikeToggle.WIDTH,
-      h: Math.round(r1.height)
+      w: Math.round(w),
+      h: Math.round(r1.height),
+      margin: Math.round(w + VideoDislikeToggle.GAP),
+      tier
     };
   }
 
   applyGeometry(g) {
     if (!this.slot || !g) return;
-    const sig = `${g.left},${g.top},${g.w},${g.h}`;
+    // 让位边距（只写变化的）
+    const main = this._items();
+    if (main && g.margin !== this._marginPx) {
+      main.children[1].style.marginLeft = `${g.margin}px`;
+      this._marginPx = g.margin;
+    }
+    const sig = `${g.left},${g.top},${g.w},${g.h},${g.tier}`;
     if (sig === this._geo) return;
     this._geo = sig;
     this.slot.style.left = `${g.left}px`;
     this.slot.style.top = `${g.top}px`;
     this.slot.style.width = `${g.w}px`;
     this.slot.style.height = `${g.h}px`;
+    this._applyTier(g.tier);
+  }
+
+  /** 应用尺寸档（余量不足时自动退化为仅图标） */
+  _applyTier(i) {
+    if (this._tier === i || !this._el) return;
+    this._tier = i;
+    const t = VideoDislikeToggle.TIERS[i];
+    this._icon.style.width = `${t.icon}px`;
+    this._icon.style.height = `${t.icon}px`;
+    this._icon.style.marginRight = t.font ? '4px' : '0';
+    this._el.style.fontSize = t.font ? `${t.font}px` : '';
+    this._text.style.display = t.font ? '' : 'none';
   }
 
   reposition() {
@@ -650,7 +712,7 @@ class VideoDislikeToggle {
     this._toastTimer = setTimeout(() => this._toastEl.classList.remove('bv-show'), 1600);
   }
 
-  /** 控件样式（数值对齐原生 .toolbar-left-item-wrap：高 28、字号 13、图标 28） */
+  /** 控件样式（尺寸由 _applyTier 按余量写入，此处只定形态与配色） */
   static get STYLE() {
     return `
       /* 当前视频开关：外观模仿点赞项（图标 + 文字，无底色） */
@@ -669,13 +731,7 @@ class VideoDislikeToggle {
       .bv-dl-toggle:hover { color: rgb(0, 174, 236); }
       .bv-dl-toggle.bv-on { color: rgb(0, 174, 236); }
       /* 垂直翻转点赞图标即为"踩"，与点赞控件同源同形 */
-      .bv-dl-toggle-icon {
-        width: 24px;
-        height: 24px;
-        margin-right: 6px;
-        flex: 0 0 auto;
-        transform: scaleY(-1);
-      }
+      .bv-dl-toggle-icon { flex: 0 0 auto; transform: scaleY(-1); }
       .bv-dl-toggle-toast {
         position: absolute;
         left: 50%;
@@ -700,7 +756,7 @@ class VideoDislikeToggle {
     return `
       <div class="bv-dl-toggle" role="button" title="不感兴趣（减少此类与该作者推荐）">
         <svg viewBox="0 0 36 36" class="bv-dl-toggle-icon" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${VideoDislikeToggle.THUMB_PATH}"></path></svg>
-        <span>不感兴趣</span>
+        <span class="bv-dl-toggle-text">不感兴趣</span>
       </div>
       <div class="bv-dl-toggle-toast"></div>
     `;
