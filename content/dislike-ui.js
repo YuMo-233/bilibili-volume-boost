@@ -35,10 +35,12 @@ class DislikeLayer {
     if (!DislikeLayer._host || !DislikeLayer._host.isConnected) {
       const host = document.createElement('div');
       host.id = DislikeLayer.HOST_ID;
-      // 容器本身 0 尺寸、不拦指针；各 slot 自定位
+      // 容器本身 0 尺寸、不拦指针；各 slot 自定位。
+      // z-index 必须低于 B 站吸顶导航（.bili-header__menu 为 1002）：
+      // 否则页面滚动到操作栏被导航遮住时，只有我们的控件浮在导航栏之上，观感错乱。
       host.style.cssText =
         'all:initial;position:absolute;top:0;left:0;width:0;height:0;' +
-        'z-index:2147482000;pointer-events:none;overflow:visible;';
+        'z-index:1000;pointer-events:none;overflow:visible;';
       const root = host.attachShadow({ mode: 'closed' });
       // 图层承载多组控件，样式统一在此注入一次
       root.innerHTML = `<style>${DislikeCardUI.STYLE}${VideoDislikeToggle.STYLE}</style>`;
