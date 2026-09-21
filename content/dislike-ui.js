@@ -382,18 +382,19 @@ class DislikeCardUI {
       .bv-dl-pop:hover { color: rgb(232, 230, 227); background: rgba(255, 255, 255, .08); }
       .bv-dl-pop svg { display: block; }
 
-      /* 弹出菜单：底色/圆角/内边距/项高/字号均取自原生 */
+      /* 弹出菜单：底色/圆角/内边距/项高/字号均取自原生，
+         弹出方向与对齐也照搬原生（vui_popover-is-bottom-end：向下弹出、右对齐） */
       .bv-dl-menu {
         position: absolute;
         right: 0;
-        bottom: calc(100% + 4px);
+        top: calc(100% + 4px);
         min-width: 142px;
         padding: 12px 0;
         background: rgb(24, 26, 27);
         border-radius: 12px;
         opacity: 0;
         visibility: hidden;
-        transform: translateY(4px);
+        transform: translateY(-4px);
         transition: opacity .2s, transform .2s, visibility .2s;
         pointer-events: none;
       }
