@@ -498,38 +498,23 @@ class DislikeCardUI {
  *   measure() / applyGeometry(g) / setOn(bool)
  */
 class VideoDislikeToggle {
-  /** 目标宽度：与原生项同宽（原生每项 92 + 右边距 8 = 步距 100） */
-  static get DESIRED_W() { return 92; }
+  /** 图标尺寸（与原生点赞项图标一致） */
+  static get ICON() { return 24; }
+
+  /**
+   * 项内留白：原生每项固定 92 宽而内容仅约 66，余下约 26px 是项内空白，
+   * 相邻项的视觉间距因此约 34px。本项照搬这个留白，间距才能与原生一致。
+   */
+  static get INNER_SLACK() { return 26; }
 
   /** 与原生项一致的间距 */
   static get GAP() { return 8; }
 
-  /** 余量下限：低于此值宁可不显示，避免挤压原生布局 */
-  static get MIN_BUDGET() { return 46; }
+  /** 本项宽度 = 图标 + 项内留白 */
+  static get WIDTH() { return VideoDislikeToggle.ICON + VideoDislikeToggle.INNER_SLACK; }
 
-  /**
-   * 尺寸档位（icon 像素 / 文字像素，font=0 表示仅图标）。
-   * 操作栏余量随窗口宽度变化，按实测余量选最大可用档，保证绝不溢出。
-   */
-  static get TIERS() {
-    return [
-      { icon: 24, font: 13 },   // 余量充裕：与原生项同规格
-      { icon: 22, font: 12 },
-      { icon: 20, font: 11 },
-      { icon: 20, font: 0 }     // 余量不足：退化为仅图标
-    ];
-  }
-
-  /** 按可用宽度选档；内容宽度估算 = 图标 + 间隔 + 4 个汉字 */
-  static pickTier(budget) {
-    const tiers = VideoDislikeToggle.TIERS;
-    for (let i = 0; i < tiers.length; i++) {
-      const t = tiers[i];
-      const need = t.icon + (t.font ? 4 + t.font * 4 : 0);
-      if (need <= budget) return i;
-    }
-    return tiers.length - 1;
-  }
+  /** 让位量 = 本项宽度 + 间距；超过操作栏余量时宁可不显示 */
+  static get NEEDED() { return VideoDislikeToggle.WIDTH + VideoDislikeToggle.GAP; }
 
   /** 激活色（B 站品牌蓝，点赞激活同色） */
   static get ON_COLOR() { return 'rgb(0, 174, 236)'; }
@@ -543,14 +528,11 @@ class VideoDislikeToggle {
     this.onToggle = handlers.onToggle;  // (nextOn) => Promise<boolean>
     this.slot = null;
     this._el = null;
-    this._icon = null;
-    this._text = null;
     this._toastEl = null;
     this._on = false;
     this._busy = false;
     this._geo = '';
     this._marginPx = 0;                 // 已写入第 2 项的 margin-left
-    this._tier = -1;                    // 当前尺寸档
     this._toastTimer = null;
   }
 
@@ -570,8 +552,6 @@ class VideoDislikeToggle {
     root.appendChild(this.slot);
 
     this._el = this.slot.querySelector('.bv-dl-toggle');
-    this._icon = this.slot.querySelector('.bv-dl-toggle-icon');
-    this._text = this.slot.querySelector('.bv-dl-toggle-text');
     this._toastEl = this.slot.querySelector('.bv-dl-toggle-toast');
     this._el.addEventListener('click', (e) => this._onClick(e));
     this._el.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -592,12 +572,9 @@ class VideoDislikeToggle {
       this.slot.remove();
       this.slot = null;
       this._el = null;
-      this._icon = null;
-      this._text = null;
       this._toastEl = null;
     }
     this._geo = '';
-    this._tier = -1;
     this._on = false;
     DislikeLayer.release();
   }
@@ -617,8 +594,9 @@ class VideoDislikeToggle {
   }
 
   /**
-   * 只读测量：算出操作栏真实余量，据此定控件宽度与尺寸档。
+   * 只读测量：算出操作栏真实余量，余量够才落位。
    * 余量 = 容器宽 − 左组宽（不含本已占的让位边距）− 右组宽。
+   * 本项总宽固定为 WIDTH（图标 + 项内留白），让位 NEEDED，与原生节奏一致。
    */
   measure() {
     if (!this.slot) return null;
@@ -633,19 +611,15 @@ class VideoDislikeToggle {
 
     const baseLeft = left.offsetWidth - this._marginPx;
     const slack = Math.max(0, tc.clientWidth - baseLeft - right.offsetWidth);
-    const budget = Math.max(0, slack - VideoDislikeToggle.GAP);
-    if (budget < VideoDislikeToggle.MIN_BUDGET) return null;   // 宁可不显示
+    if (slack < VideoDislikeToggle.NEEDED) return null;   // 余量不足宁可不显示，避免挤压原生布局
 
-    const tier = VideoDislikeToggle.pickTier(budget);
-    const w = Math.min(budget, VideoDislikeToggle.DESIRED_W);
     const br = document.body.getBoundingClientRect();
     return {
       left: Math.round(r1.right - br.left) + VideoDislikeToggle.GAP,
       top: Math.round(r1.top - br.top),
-      w: Math.round(w),
+      w: VideoDislikeToggle.WIDTH,
       h: Math.round(r1.height),
-      margin: Math.round(w + VideoDislikeToggle.GAP),
-      tier
+      margin: VideoDislikeToggle.NEEDED
     };
   }
 
@@ -657,26 +631,13 @@ class VideoDislikeToggle {
       main.children[1].style.marginLeft = `${g.margin}px`;
       this._marginPx = g.margin;
     }
-    const sig = `${g.left},${g.top},${g.w},${g.h},${g.tier}`;
+    const sig = `${g.left},${g.top},${g.w},${g.h}`;
     if (sig === this._geo) return;
     this._geo = sig;
     this.slot.style.left = `${g.left}px`;
     this.slot.style.top = `${g.top}px`;
     this.slot.style.width = `${g.w}px`;
     this.slot.style.height = `${g.h}px`;
-    this._applyTier(g.tier);
-  }
-
-  /** 应用尺寸档（余量不足时自动退化为仅图标） */
-  _applyTier(i) {
-    if (this._tier === i || !this._el) return;
-    this._tier = i;
-    const t = VideoDislikeToggle.TIERS[i];
-    this._icon.style.width = `${t.icon}px`;
-    this._icon.style.height = `${t.icon}px`;
-    this._icon.style.marginRight = t.font ? '4px' : '0';
-    this._el.style.fontSize = t.font ? `${t.font}px` : '';
-    this._text.style.display = t.font ? '' : 'none';
   }
 
   reposition() {
@@ -712,18 +673,16 @@ class VideoDislikeToggle {
     this._toastTimer = setTimeout(() => this._toastEl.classList.remove('bv-show'), 1600);
   }
 
-  /** 控件样式（尺寸由 _applyTier 按余量写入，此处只定形态与配色） */
+  /** 控件样式（仅图标；尺寸与留白对齐原生项节奏） */
   static get STYLE() {
     return `
-      /* 当前视频开关：外观模仿点赞项（图标 + 文字，无底色） */
+      /* 当前视频开关：模仿点赞项的图标形态（无底色） */
       .bv-dl-toggle {
         position: absolute;
         inset: 0;
         display: flex;
         align-items: center;
         color: rgb(167, 160, 148);
-        font: 400 13px/28px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-        white-space: nowrap;
         cursor: pointer;
         pointer-events: auto;
         transition: color .2s;
@@ -731,7 +690,12 @@ class VideoDislikeToggle {
       .bv-dl-toggle:hover { color: rgb(0, 174, 236); }
       .bv-dl-toggle.bv-on { color: rgb(0, 174, 236); }
       /* 垂直翻转点赞图标即为"踩"，与点赞控件同源同形 */
-      .bv-dl-toggle-icon { flex: 0 0 auto; transform: scaleY(-1); }
+      .bv-dl-toggle-icon {
+        width: 24px;
+        height: 24px;
+        flex: 0 0 auto;
+        transform: scaleY(-1);
+      }
       .bv-dl-toggle-toast {
         position: absolute;
         left: 50%;
@@ -756,7 +720,6 @@ class VideoDislikeToggle {
     return `
       <div class="bv-dl-toggle" role="button" title="不感兴趣（减少此类与该作者推荐）">
         <svg viewBox="0 0 36 36" class="bv-dl-toggle-icon" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${VideoDislikeToggle.THUMB_PATH}"></path></svg>
-        <span class="bv-dl-toggle-text">不感兴趣</span>
       </div>
       <div class="bv-dl-toggle-toast"></div>
     `;
