@@ -21,13 +21,34 @@
  * - 注入位置见 docs/adr/0008：一律挂自有图层，绝不动宿主 Vue 管理的 DOM 结构
  */
 class BoostDislike {
-  /** 相关推荐卡片选择器（B 站改版时逐级退化） */
-  static get CARD_SELECTORS() {
+  /** 详情页右侧「相关推荐」卡片选择器（B 站改版时逐级退化） */
+  static get RELATED_CARD_SELECTORS() {
     return [
       '.recommend-list-v1 .video-page-card-small',
       '.recommend-list-v1 .video-page-card',
       '.recommend-list-v1 [class*="video-page-card"]'
     ];
+  }
+
+  /** 搜索页结果卡片：与首页同属竖版 `.bili-video-card` 组件（封面在上、信息在下） */
+  static get SEARCH_CARD_SELECTORS() {
+    return ['.bili-video-card'];
+  }
+
+  /** 搜索页宿主 */
+  static get SEARCH_HOST() { return 'search.bilibili.com'; }
+
+  /**
+   * 当前页面扫哪些卡片、用哪套已反馈态几何。
+   * 搜索卡是竖版大封面（约 217×122），浮层内容可用原生尺寸；
+   * 详情页推荐卡是横版小封面（141×80），需缩小。
+   */
+  static context() {
+    const search = location.hostname === BoostDislike.SEARCH_HOST;
+    return {
+      selectors: search ? BoostDislike.SEARCH_CARD_SELECTORS : BoostDislike.RELATED_CARD_SELECTORS,
+      variant: search ? 'lg' : 'sm'
+    };
   }
 
   /** 上报接口 */
@@ -100,8 +121,9 @@ class BoostDislike {
 
     this._syncToggle();
 
+    const ctx = BoostDislike.context();
     const nodes = [];
-    for (const sel of BoostDislike.CARD_SELECTORS) {
+    for (const sel of ctx.selectors) {
       document.querySelectorAll(sel).forEach((el) => nodes.push(el));
     }
     const alive = new Set(nodes);
@@ -123,7 +145,8 @@ class BoostDislike {
 
       const ui = new DislikeCardUI(card, info, {
         onReport: (reasonId) => this._report(info, reasonId),
-        onCancel: (reasonId) => this._cancel(info, reasonId)
+        onCancel: (reasonId) => this._cancel(info, reasonId),
+        variant: ctx.variant
       });
       if (ui.mount()) this._cards.set(card, { ui, info });
     }
@@ -215,13 +238,12 @@ class BoostDislike {
 
       const upLink = card.querySelector('a[href*="space.bilibili.com/"]');
       const upMid = upLink ? (upLink.getAttribute('href').match(/space\.bilibili\.com\/(\d+)/) || [])[1] : null;
-      if (!upMid) return null;
 
       const nameEl = card.querySelector('.upname .name, .upname');
       return {
         bvid,
         aid: BoostDislike.bv2av(bvid),
-        upMid,
+        upMid: upMid || null,   // 搜索页卡片不含 UP 主信息，上报前再补取（见 _fillUp）
         upName: nameEl ? nameEl.textContent.trim() : ''
       };
     } catch (_) {
@@ -240,9 +262,30 @@ class BoostDislike {
    * 成功后记入会话去重集合。
    */
   async _report(info, reasonId) {
+    // 「不想看此UP主」必须带 UP 主 mid；搜索页卡片不含该信息，先补取一次
+    if (!info.upMid && reasonId === BoostDislike.REASON_UP && !(await this._fillUp(info))) {
+      return false;
+    }
     const ok = await this._post(BoostDislike.REPORT_URL, info, reasonId);
     if (ok) this._reported.add(info.bvid);
     return ok;
+  }
+
+  /** 补取 UP 主 mid（`view` 接口免 WBI，同时带回精确 aid） */
+  async _fillUp(info) {
+    try {
+      const res = await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(info.bvid)}`, {
+        credentials: 'include'
+      });
+      const json = await res.json();
+      const data = json && json.data;
+      if (!data || !data.owner || !data.owner.mid) return false;
+      info.upMid = String(data.owner.mid);
+      if (data.aid) info.aid = data.aid;
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /** 撤销上报（reasonId 需与上报时一致） */
@@ -256,18 +299,19 @@ class BoostDislike {
   async _post(url, info, reasonId) {
     const csrf = this._csrf();
     if (!csrf) return false;
-    const body = new URLSearchParams({
+    const params = {
       app_id: '100',
       platform: '5',
       from_spmid: '333.1007.0.0',
       spmid: '333.1007.0.0',
       goto: 'av',
       id: String(info.aid),
-      mid: String(info.upMid),
       feedback_page: '1',
       reason_id: String(reasonId),
       csrf
-    });
+    };
+    if (info.upMid) params.mid = String(info.upMid);   // UP 主未知时不带该字段
+    const body = new URLSearchParams(params);
     try {
       const res = await fetch(url, {
         method: 'POST',

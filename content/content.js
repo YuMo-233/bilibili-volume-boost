@@ -25,6 +25,9 @@
       ? 'live' : 'video';
   }
 
+  /** 搜索页只跑「不感兴趣」卡片入口，不介入播放器与音量 UI */
+  const SEARCH_ONLY = location.hostname === 'search.bilibili.com';
+
   // ---- UP 主识别 ----
   const VIDEO_SELECTORS = '#bilibili-player video, .bpx-player-video video, .bilibili-player-video video, video';
   const hasUpEvent = { video: false, live: false };
@@ -106,6 +109,7 @@
   function uiSync() { if (ui && ui.isMounted()) ui._sync(); }
 
   function ensureUI() {
+    if (SEARCH_ONLY) return; // 搜索页无播放器控制栏，跳过音量 UI
     if (enabled && (!ui || !ui.isMounted())) {
       if (!ui) ui = new BoostUI(engine, (p) => {
         engine.setBoost(p);
@@ -207,6 +211,7 @@
 
   let lastVideo = null;
   function bindVideo() {
+    if (SEARCH_ONLY) return; // 搜索页不接管播放器
     if (!enabled) return;
     const video = findVideo();
     if (!video) return;
@@ -239,6 +244,7 @@
   const digitBoost = (d) => Math.min(300, 100 + d * 20); // Alt+0→100% ... Alt+9→280%（感知刻度）
 
   function onKeyDown(e) {
+    if (SEARCH_ONLY) return; // 搜索页不启用音量快捷键
     if (!enabled || isEditable(e.target)) return; // 防误触：输入框内放行
     if (!e.altKey || e.ctrlKey || e.metaKey) return;
 

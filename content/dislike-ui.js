@@ -95,6 +95,29 @@ class DislikeCardUI {
     ];
   }
 
+  /**
+   * 卡片部件选择器（两种卡片组件结构不同）：
+   * - sm：详情页右侧推荐卡（横版，封面 141×80）；外层 `.pic` 有 overflow:hidden，
+   *   故磨砂作用在其内部媒体元素上
+   * - lg：搜索页 / 首页同款竖版卡（封面约 217×122）；原生就是直接给 `.bili-video-card__image`
+   *   加 blur，外层 `--image--link` 负责裁剪
+   */
+  static get PARTS() {
+    return {
+      sm: { cover: '.pic-box', blurWrap: '.pic-box .pic', blurInner: true, info: '.info' },
+      lg: {
+        cover: '.bili-video-card__image--wrap',
+        blurWrap: '.bili-video-card__image',
+        blurInner: false,
+        info: '.bili-video-card__info'
+      }
+    };
+  }
+
+  _parts() {
+    return DislikeCardUI.PARTS[this.variant];
+  }
+
   /** 菜单隐藏延迟：留出从 ⋮ 移到菜单的时间（原生 popover 同样不立即收起） */
   static get HIDE_DELAY() { return 180; }
 
@@ -103,6 +126,7 @@ class DislikeCardUI {
     this.info = info;                                     // { bvid, aid, upMid, upName }
     this.onReport = handlers.onReport;                     // (reasonId) => Promise<boolean>
     this.onCancel = handlers.onCancel;                     // (reasonId) => Promise<boolean>
+    this.variant = handlers.variant === 'lg' ? 'lg' : 'sm'; // sm=详情页横版小封面，lg=搜索/首页竖版大封面
     this.slot = null;
     this._menu = null;
     this._overlay = null;
@@ -132,7 +156,7 @@ class DislikeCardUI {
     const root = DislikeLayer.acquire();
     this.slot = document.createElement('div');
     this.slot.className = 'bv-dl-slot';
-    this.slot.innerHTML = DislikeCardUI.MARKUP;
+    this.slot.innerHTML = DislikeCardUI.markup(this.variant);
     root.appendChild(this.slot);
 
     this._menu = this.slot.querySelector('.bv-dl-menu');
@@ -180,9 +204,9 @@ class DislikeCardUI {
       h: Math.round(cr.height),
       cover: null
     };
-    const picBox = this.card.querySelector('.pic-box');
-    if (picBox) {
-      const pr = picBox.getBoundingClientRect();
+    const cover = this.card.querySelector(this._parts().cover);
+    if (cover) {
+      const pr = cover.getBoundingClientRect();
       g.cover = {
         left: Math.round(pr.left - cr.left),
         top: Math.round(pr.top - cr.top),
@@ -294,9 +318,11 @@ class DislikeCardUI {
    * 浮层几何由 applyGeometry 负责（见 measure / applyGeometry）。
    */
   _applyFeedback(on) {
-    // 封面磨砂：目标取封面图外层（.framepreview-box 覆盖图片与预览视频），退回 img
-    const pic = this.card.querySelector('.pic-box .pic');
-    const target = pic ? (pic.querySelector('.framepreview-box') || pic.querySelector('img')) : null;
+    // 封面磨砂：sm 卡磨砂外层内部的媒体元素（外层 .pic 负责裁剪）；
+    // lg 卡按原生做法直接磨砂 .bili-video-card__image（外层 link 负责裁剪）
+    const p = this._parts();
+    const wrap = this.card.querySelector(p.blurWrap);
+    const target = !wrap ? null : (p.blurInner ? (wrap.querySelector('.framepreview-box') || wrap.querySelector('img')) : wrap);
     if (on) {
       if (target && !this._blurTarget) {
         this._blurTarget = target;
@@ -313,7 +339,7 @@ class DislikeCardUI {
       this._blurTarget = null;
     }
 
-    const info = this.card.querySelector('.info');
+    const info = this.card.querySelector(p.info);
     if (info) info.style.visibility = on ? 'hidden' : '';
 
     const pop = this.slot ? this.slot.querySelector('.bv-dl-pop') : null;
@@ -435,6 +461,15 @@ class DislikeCardUI {
       .bv-dl-revert svg { width: 13px; height: 13px; }
       .bv-dl-revert:hover { background: rgba(24, 26, 27, .45); }
 
+      /* 大封面卡（搜索页 / 首页同款竖版卡）：浮层用原生尺寸与原生「左列 + 右按钮」横排 */
+      .bv-dl-ov-inner.bv-lg { flex-direction: row; gap: 24px; }
+      .bv-dl-ov-col { display: flex; flex-direction: column; align-items: center; }
+      .bv-dl-ov-inner.bv-lg .bv-dl-ov-col > svg { width: 36px; height: 36px; margin-bottom: 5px; }
+      .bv-dl-ov-inner.bv-lg .bv-dl-ov-title { font: 400 14px/20px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+      .bv-dl-ov-inner.bv-lg .bv-dl-ov-desc { font: 400 12px/16px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; opacity: .6; }
+      .bv-dl-ov-inner.bv-lg .bv-dl-revert { gap: 0; margin-top: 0; padding: 6px 12px; font: 400 13px/1 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+      .bv-dl-ov-inner.bv-lg .bv-dl-revert svg { width: 16px; height: 16px; margin-right: 6px; }
+
       /* 轻提示：仅用于失败反馈（成功路径由撤销浮层承担，与原生一致） */
       .bv-dl-toast {
         position: absolute;
@@ -456,14 +491,25 @@ class DislikeCardUI {
     `;
   }
 
-  /** 单卡片 slot 的结构（样式在图层里统一注入） */
-  static get MARKUP() {
+  /**
+   * 单卡片 slot 的结构（样式在图层里统一注入）。
+   * sm 卡封面小（141×80），内容竖向堆叠；
+   * lg 卡封面大（约 217×122），用原生「左列（图标在上）+ 右撤销按钮」横排。
+   */
+  static markup(variant) {
     const dots = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="${DislikeCardUI.DOTS_PATH}"></path></svg>`;
     const frown = `<svg viewBox="0 0 36 36" width="36" height="36" fill="currentColor" aria-hidden="true"><path d="${DislikeCardUI.FROWN_PATH}"></path></svg>`;
     const revertIcon = `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">${DislikeCardUI.REVERT_PATHS.map((d) => `<path d="${d}"></path>`).join('')}</svg>`;
     const itemsHtml = DislikeCardUI.ITEMS
       .map((it) => `<div class="bv-dl-item" data-reason="${it.reasonId}" role="button">${it.label}</div>`)
       .join('');
+
+    const text = `
+      <span class="bv-dl-ov-title">内容不感兴趣</span>
+      <span class="bv-dl-ov-desc">将减少此类内容推荐</span>`;
+    const inner = variant === 'lg'
+      ? `<div class="bv-dl-ov-col">${frown}${text}</div><div class="bv-dl-revert">${revertIcon}撤销</div>`
+      : `${frown}${text}<div class="bv-dl-revert">${revertIcon}撤销</div>`;
 
     return `
       <div class="bv-dl-pop" title="更多操作">
@@ -472,12 +518,7 @@ class DislikeCardUI {
       </div>
 
       <div class="bv-dl-overlay">
-        <div class="bv-dl-ov-inner">
-          ${frown}
-          <span class="bv-dl-ov-title">内容不感兴趣</span>
-          <span class="bv-dl-ov-desc">将减少此类内容推荐</span>
-          <div class="bv-dl-revert">${revertIcon}撤销</div>
-        </div>
+        <div class="bv-dl-ov-inner${variant === 'lg' ? ' bv-lg' : ''}">${inner}</div>
       </div>
 
       <div class="bv-dl-toast"></div>
