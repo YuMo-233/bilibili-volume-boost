@@ -40,7 +40,8 @@ class DislikeLayer {
         'all:initial;position:absolute;top:0;left:0;width:0;height:0;' +
         'z-index:2147482000;pointer-events:none;overflow:visible;';
       const root = host.attachShadow({ mode: 'closed' });
-      root.innerHTML = `<style>${DislikeCardUI.STYLE}</style>`;
+      // 图层承载多组控件，样式统一在此注入一次
+      root.innerHTML = `<style>${DislikeCardUI.STYLE}${VideoDislikeToggle.STYLE}</style>`;
       document.body.appendChild(host);
       DislikeLayer._host = host;
       DislikeLayer._root = root;
@@ -478,6 +479,230 @@ class DislikeCardUI {
       </div>
 
       <div class="bv-dl-toast"></div>
+    `;
+  }
+}
+
+/**
+ * 当前视频「不感兴趣」开关 — 模仿点赞控件，插在点赞与投币之间
+ *
+ * 约束（实测）：
+ * - 操作栏 `.video-toolbar-left-main` 的项是 Vue 渲染的，插件**不插入节点**；
+ *   空间靠给第 2 项（投币）加 `margin-left` 让出来，我们再把控件绝对定位到空位上。
+ * - 操作栏容器 `.video-toolbar-container` 总宽 693，左组 400 + 右组 197，
+ *   空余 96px；因此控件宽度 + 8 必须 ≤ 96。
+ * - 点击一次 = 上报「不感兴趣（不想看此UP主，reason_id=4）」，再点一次 = 撤销。
+ *
+ * 公共接口（dislike.js 依赖）：
+ *   new VideoDislikeToggle({ onToggle }) / mount() / unmount() / isMounted()
+ *   measure() / applyGeometry(g) / setOn(bool)
+ */
+class VideoDislikeToggle {
+  /** 控件宽度（含图标与文字） */
+  static get WIDTH() { return 82; }
+
+  /** 与原生项一致的右侧间距 */
+  static get GAP() { return 8; }
+
+  /** 激活色（B 站品牌蓝，点赞激活同色） */
+  static get ON_COLOR() { return 'rgb(0, 174, 236)'; }
+
+  /** 点赞图标路径（垂直翻转即为"踩"，保证与点赞控件同源同形） */
+  static get THUMB_PATH() {
+    return 'M9.77234 30.8573V11.7471H7.54573C5.50932 11.7471 3.85742 13.3931 3.85742 15.425V27.1794C3.85742 29.2112 5.50932 30.8573 7.54573 30.8573H9.77234ZM11.9902 30.8573V11.7054C14.9897 10.627 16.6942 7.8853 17.1055 3.33591C17.2666 1.55463 18.9633 0.814421 20.5803 1.59505C22.1847 2.36964 23.243 4.32583 23.243 6.93947C23.243 8.50265 23.0478 10.1054 22.6582 11.7471H29.7324C31.7739 11.7471 33.4289 13.402 33.4289 15.4435C33.4289 15.7416 33.3928 16.0386 33.3215 16.328L30.9883 25.7957C30.2558 28.7683 27.5894 30.8573 24.528 30.8573H11.9911H11.9902Z';
+  }
+
+  constructor(handlers) {
+    this.onToggle = handlers.onToggle;  // (nextOn) => Promise<boolean>
+    this.slot = null;
+    this._el = null;
+    this._toastEl = null;
+    this._on = false;
+    this._busy = false;
+    this._geo = '';
+    this._marginSet = '';               // 已写入第 2 项的 margin-left（Vue 重置后需重写）
+    this._toastTimer = null;
+  }
+
+  isMounted() {
+    return !!(this.slot && this.slot.isConnected);
+  }
+
+  mount() {
+    if (this.isMounted()) return true;
+    if (!document.body) return false;
+    if (!this._makeRoom()) return false;   // 找不到操作栏则先不挂
+
+    const root = DislikeLayer.acquire();
+    this.slot = document.createElement('div');
+    this.slot.className = 'bv-dl-slot';
+    this.slot.innerHTML = VideoDislikeToggle.MARKUP;
+    root.appendChild(this.slot);
+
+    this._el = this.slot.querySelector('.bv-dl-toggle');
+    this._toastEl = this.slot.querySelector('.bv-dl-toggle-toast');
+    this._el.addEventListener('click', (e) => this._onClick(e));
+    this._el.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    this.reposition();
+    return true;
+  }
+
+  unmount() {
+    clearTimeout(this._toastTimer);
+    this._releaseRoom();
+    if (this.slot) {
+      this.slot.remove();
+      this.slot = null;
+      this._el = null;
+      this._toastEl = null;
+    }
+    this._geo = '';
+    this._on = false;
+    DislikeLayer.release();
+  }
+
+  /** 点赞项与其后一项的容器 */
+  _items() {
+    const main = document.querySelector('.video-toolbar-left-main');
+    if (!main || main.children.length < 2) return null;
+    return main;
+  }
+
+  /** 给第 2 项（投币）加左边距，让出控件位置 */
+  _makeRoom() {
+    const main = this._items();
+    if (!main) return false;
+    const want = `${VideoDislikeToggle.WIDTH + VideoDislikeToggle.GAP}px`;
+    if (this._marginSet !== want) {
+      main.children[1].style.marginLeft = want;
+      this._marginSet = want;
+    }
+    return true;
+  }
+
+  /** 归还让位（卸载时还原原生布局） */
+  _releaseRoom() {
+    const main = this._items();
+    if (main && this._marginSet) main.children[1].style.marginLeft = '';
+    this._marginSet = '';
+  }
+
+  /** 只读测量：定位在点赞项右侧让出的空位上 */
+  measure() {
+    if (!this.slot) return null;
+    const main = this._items();
+    if (!main) return null;
+    // Vue 重渲染可能抹掉让位边距，这里按需重写
+    this._makeRoom();
+    const r1 = main.children[0].getBoundingClientRect();
+    if (r1.width <= 0 || r1.height <= 0) return null;
+    const br = document.body.getBoundingClientRect();
+    return {
+      left: Math.round(r1.right - br.left) + VideoDislikeToggle.GAP,
+      top: Math.round(r1.top - br.top),
+      w: VideoDislikeToggle.WIDTH,
+      h: Math.round(r1.height)
+    };
+  }
+
+  applyGeometry(g) {
+    if (!this.slot || !g) return;
+    const sig = `${g.left},${g.top},${g.w},${g.h}`;
+    if (sig === this._geo) return;
+    this._geo = sig;
+    this.slot.style.left = `${g.left}px`;
+    this.slot.style.top = `${g.top}px`;
+    this.slot.style.width = `${g.w}px`;
+    this.slot.style.height = `${g.h}px`;
+  }
+
+  reposition() {
+    this.applyGeometry(this.measure());
+  }
+
+  setOn(on) {
+    this._on = !!on;
+    if (this._el) this._el.classList.toggle('bv-on', this._on);
+  }
+
+  async _onClick(e) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (this._busy) return;
+    this._busy = true;
+    const next = !this._on;
+    const ok = await this.onToggle(next);
+    this._busy = false;
+    if (ok) {
+      this.setOn(next);
+      this.toast(next ? '已减少此类推荐' : '已撤销');
+    } else {
+      this.toast(next ? '操作失败，请稍后重试' : '撤销失败，请稍后重试');
+    }
+  }
+
+  toast(text) {
+    if (!this._toastEl) return;
+    this._toastEl.textContent = text;
+    this._toastEl.classList.add('bv-show');
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => this._toastEl.classList.remove('bv-show'), 1600);
+  }
+
+  /** 控件样式（数值对齐原生 .toolbar-left-item-wrap：高 28、字号 13、图标 28） */
+  static get STYLE() {
+    return `
+      /* 当前视频开关：外观模仿点赞项（图标 + 文字，无底色） */
+      .bv-dl-toggle {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        color: rgb(167, 160, 148);
+        font: 400 13px/28px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        white-space: nowrap;
+        cursor: pointer;
+        pointer-events: auto;
+        transition: color .2s;
+      }
+      .bv-dl-toggle:hover { color: rgb(0, 174, 236); }
+      .bv-dl-toggle.bv-on { color: rgb(0, 174, 236); }
+      /* 垂直翻转点赞图标即为"踩"，与点赞控件同源同形 */
+      .bv-dl-toggle-icon {
+        width: 24px;
+        height: 24px;
+        margin-right: 6px;
+        flex: 0 0 auto;
+        transform: scaleY(-1);
+      }
+      .bv-dl-toggle-toast {
+        position: absolute;
+        left: 50%;
+        top: 100%;
+        transform: translate(-50%, 4px);
+        padding: 4px 10px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, .78);
+        font: 400 12px/1.4 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: #fff;
+        white-space: nowrap;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity .2s, transform .2s, visibility .2s;
+        pointer-events: none;
+      }
+      .bv-dl-toggle-toast.bv-show { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+    `;
+  }
+
+  static get MARKUP() {
+    return `
+      <div class="bv-dl-toggle" role="button" title="不感兴趣（减少此类与该作者推荐）">
+        <svg viewBox="0 0 36 36" class="bv-dl-toggle-icon" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${VideoDislikeToggle.THUMB_PATH}"></path></svg>
+        <span>不感兴趣</span>
+      </div>
+      <div class="bv-dl-toggle-toast"></div>
     `;
   }
 }

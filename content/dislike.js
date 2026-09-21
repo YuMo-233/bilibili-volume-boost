@@ -1,19 +1,24 @@
 /**
- * 相关推荐「不感兴趣」— 逻辑编排（ISOLATED world）
+ * 「不感兴趣」— 逻辑编排（ISOLATED world）
+ *
+ * 两块功能共用同一套上报通道与自有图层：
+ * 1. 视频详情页右侧「相关推荐」卡片：右下角常驻 ⋮，两项直达（见下）
+ * 2. 当前正在播放的视频：操作栏「点赞 / 投币」之间一个开关式控件，
+ *    一次点击上报「不想看此UP主」，再点一次撤销
  *
  * 设计（见 docs/adr/0008）：
- * - 仅在视频详情页右侧「相关推荐」列表注入；只处理含 BV 链接的 UGC 视频卡，
- *   番剧/直播/广告卡有各自的上报体系，不混入
+ * - 只处理含 BV 链接的 UGC 视频卡；番剧/直播/广告卡有各自的上报体系，不混入
  * - 上报走 B 站原生通道，非本地假移除：
  *     POST https://api.bilibili.com/x/web-interface/feedback/dislike
  *     POST https://api.bilibili.com/x/web-interface/feedback/dislike/cancel
  *   请求体：app_id=100&platform=5&goto=av&id={aid}&mid={UP主mid}
  *          &feedback_page=1&reason_id={1|4}&csrf={bili_jct}
  *   实测该接口不校验 WBI 签名，携带页面 cookie 即可
- * - 视频身份纯 DOM 提取（零网络请求）：bvid 取自卡片 href，
+ * - 视频身份纯 DOM 提取（零网络请求）：bvid 取自链接/URL，
  *   UP 主 mid 取自 space 链接，aid 由 bvid 本地换算（bv2av）
- * - 会话去重：已上报的 bvid 记入集合，再次出现不再注入按钮、不重复上报
- * - 未登录（无 bili_jct）不注入按钮
+ * - 会话去重：已上报的 bvid 记入集合，推荐卡再次出现不再注入按钮、不重复上报
+ * - 未登录（无 bili_jct）不注入任何 UI
+ * - 注入位置见 docs/adr/0008：一律挂自有图层，绝不动宿主 Vue 管理的 DOM 结构
  */
 class BoostDislike {
   /** 相关推荐卡片选择器（B 站改版时逐级退化） */
@@ -40,10 +45,16 @@ class BoostDislike {
     return 'FcwAPNKTMug3GV5Lj7EJnHpWsx4tb8haYeviqBz6rkCy12mUSDQX9RdoZf';
   }
 
+  /** 理由 id：不想看此UP主（原生菜单第二项） */
+  static get REASON_UP() {
+    return 4;
+  }
+
   constructor() {
     this._cards = new Map();    // card 元素 -> { ui, info }
     this._reported = new Set(); // 已上报的 bvid（会话内去重）
     this._running = false;
+    this._toggle = null;        // 当前视频的开关控件
     this._raf = null;
     this._onViewport = () => this.scheduleReposition();
   }
@@ -86,6 +97,8 @@ class BoostDislike {
       this._clearAll();
       return;
     }
+
+    this._syncToggle();
 
     const nodes = [];
     for (const sel of BoostDislike.CARD_SELECTORS) {
@@ -133,6 +146,10 @@ class BoostDislike {
         const g = rec.ui.measure();                 // 只读
         if (g) batch.push([rec.ui, g]);
       }
+      if (this._toggle && this._toggle.isMounted()) {
+        const g = this._toggle.measure();
+        if (g) batch.push([this._toggle, g]);
+      }
       for (const [ui, g] of batch) ui.applyGeometry(g); // 只写
     });
   }
@@ -141,6 +158,48 @@ class BoostDislike {
   _clearAll() {
     for (const [, rec] of this._cards) rec.ui.unmount();
     this._cards.clear();
+    if (this._toggle) {
+      this._toggle.unmount();
+      this._toggle = null;
+    }
+  }
+
+  /**
+   * 当前视频的开关控件（模仿点赞项，插在点赞与投币之间）。
+   * 拿不到本页视频身份（非详情页 / 无 UP 主链接）时不显示。
+   */
+  _syncToggle() {
+    const info = this._currentVideo();
+    if (!info) {
+      if (this._toggle) {
+        this._toggle.unmount();
+        this._toggle = null;
+      }
+      return;
+    }
+    if (!this._toggle) {
+      this._toggle = new VideoDislikeToggle({ onToggle: (on) => this._toggleReport(on) });
+    }
+    if (!this._toggle.isMounted() && !this._toggle.mount()) {
+      this._toggle = null; // 操作栏未就绪，等下一轮
+    }
+  }
+
+  /** 本页正在播放的视频身份（bvid 取自 URL，UP 主 mid 取自页面链接） */
+  _currentVideo() {
+    const m = location.pathname.match(/\/video\/(BV[0-9A-Za-z]{10})/);
+    if (!m) return null;
+    const a = document.querySelector('.up-info-container a[href*="space.bilibili.com"], a[href*="space.bilibili.com"][title]');
+    const mid = a ? (a.getAttribute('href').match(/space\.bilibili\.com\/(\d+)/) || [])[1] : null;
+    if (!mid) return null;
+    return { bvid: m[1], aid: BoostDislike.bv2av(m[1]), upMid: mid, upName: '' };
+  }
+
+  /** 开关动作：开 = 上报「不想看此UP主」，关 = 撤销 */
+  async _toggleReport(on) {
+    const info = this._currentVideo();
+    if (!info) return false;
+    return on ? this._report(info, BoostDislike.REASON_UP) : this._cancel(info, BoostDislike.REASON_UP);
   }
 
   /**

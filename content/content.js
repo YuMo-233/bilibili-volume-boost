@@ -192,7 +192,8 @@
       running: dislike._running,
       loggedIn: dislike.isLoggedIn(),
       cards: dislike._cards.size,
-      reported: Array.from(dislike._reported)
+      reported: Array.from(dislike._reported),
+      toggle: !!(dislike._toggle && dislike._toggle.isMounted())
     };
   }
 
