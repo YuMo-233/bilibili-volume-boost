@@ -104,12 +104,21 @@ class DislikeCardUI {
    */
   static get PARTS() {
     return {
-      sm: { cover: '.pic-box', blurWrap: '.pic-box .pic', blurInner: true, info: '.info' },
+      sm: {
+        cover: '.pic-box',
+        blurWrap: '.pic-box .pic',
+        blurInner: true,
+        info: '.info',
+        anchor: '.info',              // ⋮ 贴信息区右上（与标题第一行对齐）
+        title: '.info .title'
+      },
       lg: {
         cover: '.bili-video-card__image--wrap',
         blurWrap: '.bili-video-card__image',
         blurInner: false,
-        info: '.bili-video-card__info'
+        info: '.bili-video-card__info',
+        anchor: '.bili-video-card__info--right',  // 原生 ⋮ 的定位父级
+        title: '.bili-video-card__info--tit'
       }
     };
   }
@@ -118,8 +127,39 @@ class DislikeCardUI {
     return DislikeCardUI.PARTS[this.variant];
   }
 
+  /**
+   * 给标题右侧预留 ⋮ 的位置——原生用 `--title-padding-right: 30px` 做同样的事，
+   * 否则标题第一行会长到 ⋮ 底下。只改内联样式，不动 DOM。
+   */
+  _reserveTitle() {
+    const title = this.card.querySelector(this._parts().title);
+    if (!title) return;
+    this._title = title;
+    this._prevPadR = title.style.paddingRight;
+    const cur = parseFloat(getComputedStyle(title).paddingRight) || 0;
+    if (cur < DislikeCardUI.TITLE_RESERVE) {
+      title.style.paddingRight = `${DislikeCardUI.TITLE_RESERVE}px`;
+    }
+  }
+
+  /** 还原标题的右侧内边距 */
+  _releaseTitle() {
+    if (this._title) this._title.style.paddingRight = this._prevPadR || '';
+    this._title = null;
+    this._prevPadR = '';
+  }
+
   /** 菜单隐藏延迟：留出从 ⋮ 移到菜单的时间（原生 popover 同样不立即收起） */
   static get HIDE_DELAY() { return 180; }
+
+  /** ⋮ 入口尺寸（原生 --no-interest-entry-size 为 18px） */
+  static get POP_SIZE() { return 18; }
+
+  /** ⋮ 相对信息区顶部的偏移（原生 `top: calc((标题行高 - 入口尺寸) / 2)` = 2px） */
+  static get POP_TOP() { return 2; }
+
+  /** 标题为 ⋮ 预留的右侧内边距（原生 --title-padding-right 为 30px） */
+  static get TITLE_RESERVE() { return 30; }
 
   constructor(card, info, handlers) {
     this.card = card;
@@ -143,6 +183,10 @@ class DislikeCardUI {
     this._prevTransition = '';                             // 磨砂前的 inline transition
     this._geo = '';                                        // 最近一次写入的 slot 几何签名
     this._coverSig = '';                                   // 最近一次写入的封面矩形签名
+    this._pop = null;                                      // ⋮ hover 容器
+    this._popSig = '';                                     // 最近一次写入的 ⋮ 位置签名
+    this._title = null;                                    // 标题元素（为 ⋮ 预留右侧空间）
+    this._prevPadR = '';                                   // 预留前的 inline padding-right
   }
 
   isMounted() {
@@ -166,8 +210,10 @@ class DislikeCardUI {
     this._menu = this.slot.querySelector('.bv-dl-menu');
     this._overlay = this.slot.querySelector('.bv-dl-overlay');
     this._toastEl = this.slot.querySelector('.bv-dl-toast');
+    this._pop = this.slot.querySelector('.bv-dl-pop');
 
     this._bind();
+    this._reserveTitle();
     this.reposition();
     return true;
   }
@@ -185,15 +231,18 @@ class DislikeCardUI {
     this._onCardLeave = null;
     this._popHover = false;
     this._applyFeedback(false); // 还原封面磨砂与信息区可见性，不留副作用
+    this._releaseTitle();       // 还原标题右侧内边距
     if (this.slot) {
       this.slot.remove();
       this.slot = null;
       this._menu = null;
       this._overlay = null;
       this._toastEl = null;
+      this._pop = null;
     }
     this._geo = '';
     this._coverSig = '';
+    this._popSig = '';
     this._reported = null;
     DislikeLayer.release();
   }
@@ -215,7 +264,9 @@ class DislikeCardUI {
       top: Math.round(cr.top - br.top),
       w: Math.round(cr.width),
       h: Math.round(cr.height),
-      cover: null
+      cover: null,
+      popLeft: null,
+      popTop: null
     };
     const cover = this.card.querySelector(this._parts().cover);
     if (cover) {
@@ -226,6 +277,14 @@ class DislikeCardUI {
         w: Math.round(pr.width),
         h: Math.round(pr.height)
       };
+    }
+
+    // ⋮ 入口：贴信息区右上角、与标题第一行对齐（原生 top:2px / right:0）
+    const anchor = this.card.querySelector(this._parts().anchor);
+    if (anchor) {
+      const ar = anchor.getBoundingClientRect();
+      g.popLeft = Math.round(ar.left - cr.left + ar.width) - DislikeCardUI.POP_SIZE;
+      g.popTop = Math.round(ar.top - cr.top) + DislikeCardUI.POP_TOP;
     }
     return g;
   }
@@ -249,6 +308,14 @@ class DislikeCardUI {
         this._overlay.style.top = `${g.cover.top}px`;
         this._overlay.style.width = `${g.cover.w}px`;
         this._overlay.style.height = `${g.cover.h}px`;
+      }
+    }
+    if (g.popLeft != null && this._pop) {
+      const psig = `${g.popLeft},${g.popTop}`;
+      if (psig !== this._popSig) {
+        this._popSig = psig;
+        this._pop.style.left = `${g.popLeft}px`;
+        this._pop.style.top = `${g.popTop}px`;
       }
     }
   }
@@ -408,17 +475,18 @@ class DislikeCardUI {
       /* 每张卡片一个 slot：绝对定位到卡片矩形，本身不拦指针 */
       .bv-dl-slot { position: absolute; pointer-events: none; overflow: visible; }
 
-      /* ⋮ 按钮 + 弹出菜单的 hover 容器（贴卡片右下角，与播放量行齐平）
-         与原生一致：默认隐藏，鼠标移到卡片上才显形（见 _bind 的卡片 hover 监听） */
+      /* ⋮ 按钮 + 弹出菜单的 hover 容器。位置与原生一致：贴信息区右上、
+         与标题第一行对齐（left/top 由 applyGeometry 写入）；
+         默认隐藏，鼠标移到卡片上才显形（见 _bind 的卡片 hover 监听） */
       .bv-dl-pop {
         position: absolute;
-        right: 2px;
-        bottom: 2px;
+        left: 0;
+        top: 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 22px;
-        height: 22px;
+        width: 18px;
+        height: 18px;
         border-radius: 4px;
         color: rgb(167, 160, 148);
         cursor: pointer;
