@@ -22,6 +22,26 @@
  *   markReported(reasonId) / clearReported() / toast(text)
  */
 
+/** 几何稳定判定所需静止时长（与 docs/adr/0006 的控件就绪判定同一思路） */
+const DL_SETTLE_MS = 300;
+
+/**
+ * 几何稳定性闸门（见 docs/adr/0009）：
+ * 页面加载、懒加载、换一换期间布局会反复变化，此时若把 slot 画在"当下"的位置，
+ * 用户看到的就是元素跟着滚动跑一段、之后又突然回正。约定：
+ * 几何签名连续 DL_SETTLE_MS 没有变化才算稳定，稳定之前 slot 隐藏。
+ * 状态挂在 ui 上（_geoSig / _geoSince）。
+ */
+function dlSettle(ui, sig) {
+  const now = performance.now();
+  if (ui._geoSig !== sig) {
+    ui._geoSig = sig;
+    ui._geoSince = now;
+    return false;
+  }
+  return now - ui._geoSince >= DL_SETTLE_MS;
+}
+
 /** 自有图层：body 上的统一容器，避免改动宿主框架管理的 DOM */
 class DislikeLayer {
   static get HOST_ID() { return 'bv-dl-layer'; }
@@ -185,6 +205,10 @@ class DislikeCardUI {
     this._coverSig = '';                                   // 最近一次写入的封面矩形签名
     this._pop = null;                                      // ⋮ hover 容器
     this._popSig = '';                                     // 最近一次写入的 ⋮ 位置签名
+    this._geoSig = '';                                     // 稳定性判定：上一次的几何签名
+    this._geoSince = 0;                                    // 稳定性判定：该签名出现的时刻
+    this._settled = false;                                 // 是否已判定稳定（稳定前 slot 隐藏）
+    this._settleTimer = null;
     this._title = null;                                    // 标题元素（为 ⋮ 预留右侧空间）
     this._prevPadR = '';                                   // 预留前的 inline padding-right
   }
@@ -222,6 +246,8 @@ class DislikeCardUI {
     clearTimeout(this._hideTimer);
     clearTimeout(this._toastTimer);
     clearTimeout(this._unhoverTimer);
+    clearTimeout(this._settleTimer);
+    this._settleTimer = null;
     // 摘掉卡片上的监听，避免宿主节点留存悬挂引用
     if (this.card && this._onCardEnter) {
       this.card.removeEventListener('mouseenter', this._onCardEnter);
@@ -243,6 +269,8 @@ class DislikeCardUI {
     this._geo = '';
     this._coverSig = '';
     this._popSig = '';
+    this._geoSig = '';
+    this._settled = false;
     this._reported = null;
     DislikeLayer.release();
   }
@@ -300,6 +328,9 @@ class DislikeCardUI {
       this.slot.style.width = `${g.w}px`;
       this.slot.style.height = `${g.h}px`;
     }
+    // 几何未定型（还在变）时先不显示，稳定后才显形（见 docs/adr/0009）
+    this._setSettled(dlSettle(this, sig));
+    if (!this._settled) this._scheduleSettle();
     if (this._reported !== null && g.cover && this._overlay) {
       const csig = `${g.cover.left},${g.cover.top},${g.cover.w},${g.cover.h}`;
       if (csig !== this._coverSig) {
@@ -400,6 +431,22 @@ class DislikeCardUI {
     if (this.slot) this.slot.classList.toggle('bv-hover', !!on);
   }
 
+  /** 稳定性开关：未稳定时整槽隐藏，避免布局抖动期把元素画在错误位置 */
+  _setSettled(on) {
+    if (this._settled === on) return;
+    this._settled = on;
+    if (this.slot) this.slot.classList.toggle('bv-unsettled', !on);
+  }
+
+  /** 未稳定时安排一次复核，不依赖外部再次触发（与 boost UI 的 settle 复核同构） */
+  _scheduleSettle() {
+    if (this._settleTimer || !this.isMounted()) return;
+    this._settleTimer = setTimeout(() => {
+      this._settleTimer = null;
+      this.reposition();
+    }, DL_SETTLE_MS);
+  }
+
   /** 展示已反馈态：封面磨砂 + 浮层只盖封面 + 隐藏标题信息区（严格对齐原生） */
   markReported(reasonId) {
     this._reported = reasonId;
@@ -474,6 +521,8 @@ class DislikeCardUI {
 
       /* 每张卡片一个 slot：绝对定位到卡片矩形，本身不拦指针 */
       .bv-dl-slot { position: absolute; pointer-events: none; overflow: visible; }
+      /* 布局未定型（几何仍在变）期间整槽隐藏，避免把元素画在错误位置后"回正"（见 docs/adr/0009） */
+      .bv-dl-slot.bv-unsettled { visibility: hidden; }
 
       /* ⋮ 按钮 + 弹出菜单的 hover 容器。位置与原生一致：贴信息区右上、
          与标题第一行对齐（left/top 由 applyGeometry 写入）；
@@ -695,6 +744,10 @@ class VideoDislikeToggle {
     this._geo = '';
     this._marginPx = 0;                 // 已写入第 2 项的 margin-left
     this._toastTimer = null;
+    this._geoSig = '';                  // 稳定性判定：上一次的几何签名
+    this._geoSince = 0;                 // 稳定性判定：该签名出现的时刻
+    this._settled = false;              // 是否已判定稳定（稳定前 slot 隐藏）
+    this._settleTimer = null;
   }
 
   isMounted() {
@@ -728,6 +781,8 @@ class VideoDislikeToggle {
 
   unmount() {
     clearTimeout(this._toastTimer);
+    clearTimeout(this._settleTimer);
+    this._settleTimer = null;
     this._releaseMargin();
     if (this.slot) {
       this.slot.remove();
@@ -736,6 +791,8 @@ class VideoDislikeToggle {
       this._toastEl = null;
     }
     this._geo = '';
+    this._geoSig = '';
+    this._settled = false;
     this._on = false;
     DislikeLayer.release();
   }
@@ -793,12 +850,32 @@ class VideoDislikeToggle {
       this._marginPx = g.margin;
     }
     const sig = `${g.left},${g.top},${g.w},${g.h}`;
-    if (sig === this._geo) return;
-    this._geo = sig;
-    this.slot.style.left = `${g.left}px`;
-    this.slot.style.top = `${g.top}px`;
-    this.slot.style.width = `${g.w}px`;
-    this.slot.style.height = `${g.h}px`;
+    if (sig !== this._geo) {
+      this._geo = sig;
+      this.slot.style.left = `${g.left}px`;
+      this.slot.style.top = `${g.top}px`;
+      this.slot.style.width = `${g.w}px`;
+      this.slot.style.height = `${g.h}px`;
+    }
+    // 几何未定型（还在变）时先不显示，稳定后才显形（见 docs/adr/0009）
+    this._setSettled(dlSettle(this, sig));
+    if (!this._settled) this._scheduleSettle();
+  }
+
+  /** 稳定性开关：未稳定时整槽隐藏，避免布局抖动期把元素画在错误位置 */
+  _setSettled(on) {
+    if (this._settled === on) return;
+    this._settled = on;
+    if (this.slot) this.slot.classList.toggle('bv-unsettled', !on);
+  }
+
+  /** 未稳定时安排一次复核，不依赖外部再次触发 */
+  _scheduleSettle() {
+    if (this._settleTimer || !this.isMounted()) return;
+    this._settleTimer = setTimeout(() => {
+      this._settleTimer = null;
+      this.reposition();
+    }, DL_SETTLE_MS);
   }
 
   reposition() {
