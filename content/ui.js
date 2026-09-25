@@ -180,7 +180,7 @@ class BoostUI {
 
     this._bindTrack();
 
-    // 刻度点击直达（500%→50% 八档，等感知等距）
+    // 刻度点击直达（500%→50% 十档，每档 50%，等感知等距）
     this.root.querySelectorAll('.bv-scale span').forEach((sp) => {
       sp.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -478,7 +478,9 @@ class BoostUI {
     <div class="bv-body">
       <div class="bv-scale">
         <span class="bv-extreme-tick" style="bottom:100%">500%</span>
+        <span class="bv-extreme-tick" style="bottom:88.9%">450%</span>
         <span class="bv-extreme-tick" style="bottom:77.8%">400%</span>
+        <span class="bv-extreme-tick" style="bottom:66.7%">350%</span>
         <span style="bottom:55.6%">300%</span>
         <span style="bottom:44.4%">250%</span>
         <span style="bottom:33.3%">200%</span>
