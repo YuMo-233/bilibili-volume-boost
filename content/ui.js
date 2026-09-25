@@ -20,6 +20,7 @@ class BoostUI {
     this.host = null;
     this.root = null;
     this.track = null;      // 竖直轨道容器
+    this.panel = null;      // 竖直展开面板
     this.fill = null;       // 蓝色填充条
     this.thumb = null;      // 白色圆点
     this.valEl = null;      // 百分比数值
@@ -158,6 +159,7 @@ class BoostUI {
   _clearHover() {
     const box = this._box();
     if (box) box.classList.remove('bv-open');
+    this._resetPanelPos();
     this._dragId = null;
     this._stopMeter();
   }
@@ -173,6 +175,7 @@ class BoostUI {
     this.root = this.host.attachShadow({ mode: 'closed' });
     this.root.innerHTML = this._template();
     this.track = this.root.querySelector('.bv-track');
+    this.panel = this.root.querySelector('.bv-panel');
     this.fill = this.root.querySelector('.bv-fill');
     this.thumb = this.root.querySelector('.bv-thumb');
     this.valEl = this.root.querySelector('.bv-val');
@@ -211,6 +214,47 @@ class BoostUI {
   }
 
   /**
+   * 裁切祖先：从宿主向上找最近的 overflow 非 visible 元素——面板溢出它就会被裁掉，
+   * 所以它就是面板必须待在其中的边界。与具体播放器结构、选择器无关。
+   */
+  findClipper() {
+    let el = this.host ? this.host.parentElement : null;
+    while (el && el !== document.body && el !== document.documentElement) {
+      if (getComputedStyle(el).overflowX !== 'visible') return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  /**
+   * 面板水平钳位：音量按钮贴着播放器边缘时（直播页左下角），默认的"居中展开"会让
+   * 面板溢出一半被裁掉。夹到裁切祖先内即可——贴边时正好与播放器边缘齐平。
+   * 面板 display:none 时量不到宽度，故只在展开之后调用。
+   */
+  _clampPanel() {
+    const panel = this.panel;
+    const box = this._box();
+    if (!panel || !box) return;
+    const clip = this.findClipper();
+    if (!clip) return;                 // 无裁切祖先：沿用 CSS 默认的居中
+    const pw = panel.offsetWidth;
+    if (!pw) return;
+    const cr = clip.getBoundingClientRect();
+    const br = box.getBoundingClientRect();
+    const centered = br.left + br.width / 2 - pw / 2;  // 居中时面板左边界（视口坐标）
+    const left = Math.max(cr.left, Math.min(centered, cr.right - pw));
+    panel.style.transform = 'none';
+    panel.style.left = `${Math.round(left - br.left)}px`;  // 换算为相对 .bv-box 的偏移
+  }
+
+  /** 还原面板定位：布局可能已变，下次展开重新钳位 */
+  _resetPanelPos() {
+    if (!this.panel) return;
+    this.panel.style.left = '';
+    this.panel.style.transform = '';
+  }
+
+  /**
    * 自绘轨道交互：pointer capture 拖动 + 滚轮微调。
    * 不冒泡给 B 站播放器，规避其全局 mousedown/preventDefault 拦截。
    */
@@ -220,6 +264,7 @@ class BoostUI {
       e.stopPropagation();
       e.preventDefault();
       this._box().classList.add('bv-open'); // 拖动期间锁定展开，防悬停脱靶
+      this._clampPanel();                   // 展开后才能量到宽度，故在此钳位
       try { this.track.setPointerCapture(e.pointerId); } catch (_) {}
       this._dragId = e.pointerId;
       this._setFromPointer(e);
@@ -252,6 +297,7 @@ class BoostUI {
     // 面板展开态（鼠标进入时激活；离开时仅非拖动状态下收起）
     this._box().addEventListener('mouseenter', () => {
       this._box().classList.add('bv-open');
+      this._clampPanel();          // 展开后钳位，贴播放器边缘时与边缘齐平
       this._startMeter();          // 面板可见才开始读限幅，收起即停
     });
     this._box().addEventListener('mouseleave', () => {
@@ -262,6 +308,7 @@ class BoostUI {
   /** 收起面板并停止读数 */
   _close() {
     this._box().classList.remove('bv-open');
+    this._resetPanelPos();
     this._stopMeter();
   }
 
@@ -378,7 +425,7 @@ class BoostUI {
       this.host.remove();
       this.host = null;
       this.root = null;
-      this.track = this.fill = this.thumb = this.valEl = null;
+      this.track = this.panel = this.fill = this.thumb = this.valEl = null;
     }
   }
 
