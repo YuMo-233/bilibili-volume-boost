@@ -56,8 +56,9 @@ class AudioEngine {
       this.gainNode.connect(this.comp);
       this.comp.connect(this.ctx.destination);
       this.video = video;
-      if (this.ctx.state === 'suspended') {
-        // 浏览器自动播放策略：等待用户手势后由 resumeOnUserGesture 恢复
+      // 自动播放策略：上下文在用户激活前必然起不来，此时 resume() 只会被拒并留下
+      // "The AudioContext was not allowed to start" 提示，故先自检（见 _canResume）
+      if (this.ctx.state === 'suspended' && this._canResume()) {
         this.ctx.resume().catch(() => {});
       }
       this.apply();
@@ -79,9 +80,23 @@ class AudioEngine {
     this.video = null;
   }
 
+  /**
+   * 自动播放策略自检：只有这几种情况下 resume() 才会被放行——
+   *   · 页面已获得用户激活（sticky activation，首次点击后恒为真）
+   *   · 该源本身已被允许自动播放（MEI 等），表现为媒体已在正常出声
+   * 其余时机调用必定被拒，且浏览器会在控制台留下
+   * "The AudioContext was not allowed to start" 提示，故调用前先过这一关。
+   */
+  _canResume() {
+    const ua = navigator.userActivation;
+    if (ua && ua.hasBeenActive) return true;
+    const v = this.video;
+    return !!(v && !v.paused && !v.ended);
+  }
+
   /** 用户手势时兜底恢复 AudioContext（首次播放/点击页面） */
   resumeOnUserGesture() {
-    if (this.ctx && this.ctx.state === 'suspended') {
+    if (this.ctx && this.ctx.state === 'suspended' && this._canResume()) {
       this.ctx.resume().catch(() => {});
     }
   }

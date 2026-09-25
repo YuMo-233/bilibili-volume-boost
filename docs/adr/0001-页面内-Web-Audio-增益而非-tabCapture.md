@@ -6,4 +6,6 @@
 
 **理由**: Chrome 有安全机制——扩展一旦捕获标签页音频（tabCapture），浏览器就禁止该标签页进入真正的系统全屏并显示蓝色方框图标；实测 B 站全屏因此退化为网页全屏（NGA 实操反馈与 Volume Master 官方 FAQ 均已确认，且官方明确表示"无法绕过"）。页面内 Web Audio 方案不触发该机制，原生沉浸全屏得以完整保留，这是本插件与通用音量放大器的核心差异化。
 
+**自动播放策略（resume 时机）**: 页面内方案必然要面对 `AudioContext` 的自动播放策略——在用户激活之前，新建的上下文处于 `suspended`，此时调 `resume()` 会被浏览器拒绝，并在控制台留下 `The AudioContext was not allowed to start` 提示。因此 `resume()` 只在两种**放行无疑**的时机调用：页面已获得用户激活（首次点击后 sticky activation 恒为真），或该源已被允许自动播放（MEI 等，表现为 video 正在正常出声）。首次交互前的 resume 交给 `pointerdown` 监听（见 `AudioEngine._canResume`）。
+
 **对后人的警告**: 不要为了省事改用 tabCapture——那会直接摧毁沉浸全屏，回到本插件存在的对立面。
