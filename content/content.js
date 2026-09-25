@@ -285,7 +285,8 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
   }
 
-  const digitBoost = (d) => Math.min(300, 100 + d * 20); // Alt+0→100% ... Alt+9→280%（感知刻度）
+  // Alt+0→50% ... Alt+1→100%，其后每档 +50%，Alt+9→500%（感知刻度十档锚点）
+  const digitBoost = (d) => (d === 0 ? 50 : 100 + (d - 1) * 50);
 
   function onKeyDown(e) {
     if (SEARCH_ONLY) return; // 搜索页不启用音量快捷键
