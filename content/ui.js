@@ -32,6 +32,9 @@ class BoostUI {
     this._anchorSig = null;  // 锚点位置签名，用于「连续两次采样一致」比对
     this._since = 0;         // 挂载时刻，兜底放行计时起点
     this._settleTimer = null;
+    this._meterRaf = null;   // 限幅读数刷新循环（仅面板展开时运行）
+    this._peakRed = 0;       // 最近 1 秒内的最大限幅量（dB）
+    this._peakAt = 0;        // 该峰值出现的时刻
   }
 
   /** 控制栏注入点（回退序列） */
@@ -60,6 +63,15 @@ class BoostUI {
 
   /** 控件就绪：锚点始终不出现时的兜底放行时限 */
   static get FALLBACK_MS() { return 5000; }
+
+  /** 极限区起点（感知值）：超过此值数值与填充转为琥珀色，仅作视觉提示，不承诺任何音质 */
+  static get EXTREME_FROM() { return 300; }
+
+  /** 限幅读数的最小显示阈值（dB）：低于此值不显示，避免零点附近的抖动噪声 */
+  static get LIMIT_SHOW_DB() { return 1; }
+
+  /** 限幅读数的峰值保持时长（毫秒）：显示最近这段时间内的最大值，读数才读得出来 */
+  static get LIMIT_HOLD_MS() { return 1000; }
 
   findSlot(type) {
     const list = BoostUI.SLOT_SELECTORS[type] || [];
@@ -147,6 +159,7 @@ class BoostUI {
     const box = this._box();
     if (box) box.classList.remove('bv-open');
     this._dragId = null;
+    this._stopMeter();
   }
 
   mount(type) {
@@ -167,7 +180,7 @@ class BoostUI {
 
     this._bindTrack();
 
-    // 刻度点击直达（300%→50% 六档，等感知等距）
+    // 刻度点击直达（500%→50% 八档，等感知等距）
     this.root.querySelectorAll('.bv-scale span').forEach((sp) => {
       sp.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -222,6 +235,8 @@ class BoostUI {
       this._commit();
       // 松手后恢复 hover 驱动（指针仍在面板内则 CSS :hover 继续显示）
       this._box().classList.remove('bv-open');
+      // 拖动期间 mouseleave 被抑制，若指针已离开面板则补一次收尾（含停表）
+      if (!this._box().matches(':hover')) this._stopMeter();
     };
     this.track.addEventListener('pointerup', release);
     this.track.addEventListener('pointercancel', release);
@@ -231,23 +246,30 @@ class BoostUI {
       e.stopPropagation();
       e.preventDefault();
       const next = this.engine.boost + (e.deltaY > 0 ? 5 : -5);
-      this.onBoostChange(Math.max(50, Math.min(300, next)));
+      this.onBoostChange(Math.max(AudioEngine.PERC_MIN, Math.min(AudioEngine.PERC_MAX, next)));
     }, { passive: false });
 
     // 面板展开态（鼠标进入时激活；离开时仅非拖动状态下收起）
     this._box().addEventListener('mouseenter', () => {
       this._box().classList.add('bv-open');
+      this._startMeter();          // 面板可见才开始读限幅，收起即停
     });
     this._box().addEventListener('mouseleave', () => {
-      if (this._dragId === null) this._box().classList.remove('bv-open');
+      if (this._dragId === null) this._close();
     });
+  }
+
+  /** 收起面板并停止读数 */
+  _close() {
+    this._box().classList.remove('bv-open');
+    this._stopMeter();
   }
 
   /** 由指针 Y 坐标换算增益百分并实时应用到引擎 */
   _setFromPointer(e) {
     const rect = this.track.getBoundingClientRect();
     const len = rect.height || 1;
-    const frac = (rect.bottom - e.clientY) / len; // 顶部=1 对应 300%，底部=0 对应 50%
+    const frac = (rect.bottom - e.clientY) / len; // 顶部=1 对应上限，底部=0 对应下限
     this._lastPct = this._posToPercent(Math.max(0, Math.min(1, frac)));
     this._sync();
     this.onBoostChange(this._lastPct);
@@ -261,24 +283,68 @@ class BoostUI {
     }
   }
 
-  /** 感知百分比 → 0..1 高度比（等感知线性：50→0、300→1） */
+  /** 感知百分比 → 0..1 高度比（等感知线性：下限→0、上限→1） */
   _fracFromPercent(p) {
-    return (p - 50) / 250;
+    return (p - AudioEngine.PERC_MIN) / (AudioEngine.PERC_MAX - AudioEngine.PERC_MIN);
   }
 
   _posToPercent(frac) {
-    return Math.round(50 + frac * 250);
+    return Math.round(AudioEngine.PERC_MIN + frac * (AudioEngine.PERC_MAX - AudioEngine.PERC_MIN));
   }
 
   _sync() {
     if (!this.track) return;
     const frac = this._fracFromPercent(this.engine.boost);
-    const muted = this.engine.muted;
+    const extreme = this.engine.boost > BoostUI.EXTREME_FROM;
     this.fill.style.height = `${(frac * 100).toFixed(1)}%`;
     this.thumb.style.bottom = `${Math.max(0, Math.min(100, frac * 100)).toFixed(1)}%`;
-    this.valEl.textContent = muted ? '静音' : `${this.engine.boost}%`;
-    this.valEl.classList.toggle('bv-muted', muted);
+    this.fill.classList.toggle('bv-extreme', extreme);
+    this.thumb.classList.toggle('bv-extreme', extreme);
+    this._render();
     this._debugState();
+  }
+
+  /** 合成数值文本：百分比 + 限幅读数（仅介入 ≥ 阈值时出现，见 docs/adr/0004） */
+  _render() {
+    if (!this.valEl) return;
+    const muted = this.engine.muted;
+    const red = this._peakRed;
+    const suffix = (!muted && red >= BoostUI.LIMIT_SHOW_DB) ? ` 限幅-${Math.round(red)}dB` : '';
+    const text = muted ? '静音' : `${this.engine.boost}%${suffix}`;
+    if (this.valEl.textContent !== text) this.valEl.textContent = text;
+    this.valEl.classList.toggle('bv-muted', muted);
+    this.valEl.classList.toggle('bv-extreme', !muted && this.engine.boost > BoostUI.EXTREME_FROM);
+  }
+
+  /** 启动限幅读数刷新（仅面板展开期间运行，收起即停，不常驻耗电） */
+  _startMeter() {
+    if (this._meterRaf) return;
+    const tick = () => {
+      this._meterRaf = requestAnimationFrame(tick);
+      this._updateMeter();
+    };
+    this._meterRaf = requestAnimationFrame(tick);
+  }
+
+  _stopMeter() {
+    if (this._meterRaf) {
+      cancelAnimationFrame(this._meterRaf);
+      this._meterRaf = null;
+    }
+    this._peakRed = 0;
+    this._peakAt = 0;
+    this._render();
+  }
+
+  /** 峰值保持：显示最近 LIMIT_HOLD_MS 内的最大限幅量，避免读数逐帧跳动 */
+  _updateMeter() {
+    const red = this.engine.getReduction();
+    const now = performance.now();
+    if (red >= this._peakRed || now - this._peakAt > BoostUI.LIMIT_HOLD_MS) {
+      this._peakRed = red;
+      this._peakAt = now;
+    }
+    this._render();
   }
 
   /** 角标 toast，1.2s 自动消失 */
@@ -305,6 +371,7 @@ class BoostUI {
       clearTimeout(this._settleTimer);
       this._settleTimer = null;
     }
+    this._stopMeter();
     this._revealed = false;
     this._anchorSig = null;
     if (this.host) {
@@ -349,7 +416,7 @@ class BoostUI {
     display: flex; align-items: center; gap: 8px;
   }
   .bv-scale {
-    position: relative; width: 30px; height: 128px;
+    position: relative; width: 30px; height: 150px;
     font: 10px/1 'Helvetica Neue', 'PingFang SC', Arial, sans-serif;
     color: rgba(255,255,255,.65); user-select: none;
   }
@@ -360,8 +427,10 @@ class BoostUI {
     transition: color .15s, background .15s;
   }
   .bv-scale span:hover { color: #fff; background: rgba(255,255,255,.16); }
+  /* 极限区刻度：常亮琥珀色，未进入也能一眼看出分界位置 */
+  .bv-scale span.bv-extreme-tick { color: rgba(255,176,32,.8); }
   .bv-track {
-    position: relative; width: 4px; height: 128px; border-radius: 3px;
+    position: relative; width: 4px; height: 150px; border-radius: 3px;
     /* 透明 padding 扩大热区（视觉仍 4px），便于抓取 */
     padding: 0 7px; background-clip: content-box;
     background: rgba(255,255,255,.25); cursor: pointer;
@@ -372,17 +441,24 @@ class BoostUI {
     border-radius: 3px; background: linear-gradient(180deg, #6dc8ff, #00aeec);
     box-shadow: 0 0 6px rgba(0,174,236,.55);
   }
+  /* 极限区（>300%）：填充与滑块描边转琥珀色，与常规区一眼可分 */
+  .bv-fill.bv-extreme {
+    background: linear-gradient(180deg, #ffd479, #ffb020);
+    box-shadow: 0 0 6px rgba(255,176,32,.55);
+  }
   .bv-thumb {
     position: absolute; left: 50%; width: 12px; height: 12px;
     transform: translate(-50%, 50%); border-radius: 50%;
     background: #fff; border: 2px solid #00aeec;
     box-shadow: 0 1px 4px rgba(0,0,0,.55);
   }
+  .bv-thumb.bv-extreme { border-color: #ffb020; }
   .bv-val {
     font: 11px/1.2 'Helvetica Neue', 'PingFang SC', Arial, sans-serif;
     color: #fff; white-space: nowrap;
   }
   .bv-val.bv-muted { color: #ff7d7d; }
+  .bv-val.bv-extreme { color: #ffb020; }
   .bv-toast {
     opacity: 0; transition: opacity .25s;
     position: fixed; left: 50%; bottom: 14%;
@@ -395,17 +471,19 @@ class BoostUI {
   .bv-toast.bv-show { opacity: 1; }
 </style>
 <div class="bv-box">
-  <button class="bv-btn" title="音量增益 50%-300%（感知等量刻度，默认 100%，悬停弹出，Alt+↑/↓ 调节，滚轮微调）">
+  <button class="bv-btn" title="音量增益 50%-500%（感知等量刻度，默认 100%，悬停弹出，Alt+↑/↓ 调节，滚轮微调）。300% 以上为极限区（琥珀色），面板会显示实时限幅量">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3zm12.4 3a3.4 3.4 0 0 0-1.9-3.05v6.1A3.4 3.4 0 0 0 15.4 12z"/><path d="M14 4.9v2.2a5.4 5.4 0 0 1 0 9.8v2.2a7.6 7.6 0 0 0 0-14.2z"/></svg>
   </button>
   <div class="bv-panel">
     <div class="bv-body">
       <div class="bv-scale">
-        <span style="bottom:100%">300%</span>
-        <span style="bottom:80%">250%</span>
-        <span style="bottom:60%">200%</span>
-        <span style="bottom:40%">150%</span>
-        <span style="bottom:20%">100%</span>
+        <span class="bv-extreme-tick" style="bottom:100%">500%</span>
+        <span class="bv-extreme-tick" style="bottom:77.8%">400%</span>
+        <span style="bottom:55.6%">300%</span>
+        <span style="bottom:44.4%">250%</span>
+        <span style="bottom:33.3%">200%</span>
+        <span style="bottom:22.2%">150%</span>
+        <span style="bottom:11.1%">100%</span>
         <span style="bottom:0">50%</span>
       </div>
       <div class="bv-track"><span class="bv-fill"></span><span class="bv-thumb"></span></div>

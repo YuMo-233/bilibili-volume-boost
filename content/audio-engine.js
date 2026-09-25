@@ -10,11 +10,14 @@
  *   本引擎只负责增益轨道。最终响度 = 原生音量 × 增益（幅值倍率）。
  *
  * 感知等量刻度（见 docs/adr/0004）：
- * - 对外数值是"感知响度百分比"（Loudness，50-300），遵循 Stevens 幂律（主观响度 ∝ 幅值^0.6），
+ * - 对外数值是"感知响度百分比"（Loudness，50-500），遵循 Stevens 幂律（主观响度 ∝ 幅值^0.6），
  *   拖动/步进时每档听感变化相同（类似系统音量滑块的体验）。
  * - 内部幅值倍率 g：g = (L/100)^(5/3)；L = 100 · g^0.6。
  *   下限感知 50% = 幅值 0.315（-10dB，用于压低过响的极端素材），默认 100%（1x）；
- *   上限感知 300% = 幅值 6.24x（+16dB）：正常内容无损；仅极端近满刻度素材由压缩器兜底限幅。
+ *   上限感知 500% = 幅值 14.62x（+23.3dB）。
+ * - 300 是**常规/极限分界**，不是"无损边界"：是否真的无损取决于素材（实测一条
+ *   主体 -31dBFS 的安静视频，峰值在上限前就已进入限幅）。真实限幅量由
+ *   getReduction() 读出并显示，不靠档位承诺。
  */
 class AudioEngine {
   constructor() {
@@ -25,7 +28,7 @@ class AudioEngine {
     this.gainNode = null;
     this.comp = null;
     this.video = null;    // 当前挂载的 video 元素
-    this.boost = 100;     // 感知音量百分比（Loudness），范围 50-300，默认 100
+    this.boost = 100;     // 感知音量百分比（Loudness），范围 50-500，默认 100
     this.muted = false;
   }
 
@@ -90,23 +93,34 @@ class AudioEngine {
 
   /**
    * 设置增益百分比。
-   * 感知刻度：100 → 幅值 1.0；300 → 幅值 6.24（等感知步进）。
+   * 感知刻度：100 → 幅值 1.0；300 → 6.24；500 → 14.62（等感知步进）。
    */
-  // 常亮感知下限/上限（Loudness 百分比）：50-300，默认 100
+  // 常亮感知下限/上限（Loudness 百分比）：50-500，默认 100
   static get PERC_MIN() { return 50; }   // 50% → 幅值 0.315（-10dB），用于压低过响素材
-  static get PERC_MAX() { return 300; }  // 幅值 6.24x（+16dB），正常内容无损，极端素材由压缩器兜底
+  static get PERC_MAX() { return 500; }  // 幅值 14.62x（+23.3dB）；实限于压缩器，见 getReduction()
 
-  /** 设置感知音量百分比（50-300） */
+  /** 设置感知音量百分比（50-500） */
   setBoost(percent) {
     this.boost = Math.max(AudioEngine.PERC_MIN, Math.min(AudioEngine.PERC_MAX, Math.round(percent)));
     this.apply();
+  }
+
+  /**
+   * 当前限幅量（dB，≥0，0 表示未介入）。
+   * 直接读 DynamicsCompressorNode.reduction，即压缩器此刻压掉了多少 dB——
+   * 用它取代"档位承诺无损"的说法：真实是否被压、压了多少，由它回答（见 docs/adr/0004）。
+   */
+  getReduction() {
+    if (!this.comp) return 0;
+    const r = this.comp.reduction;
+    return Number.isFinite(r) ? Math.abs(r) : 0;
   }
 
   setMuted(m) { this.muted = !!m; this.apply(); }
 
   toggleMute() { this.setMuted(!this.muted); return this.muted; }
 
-  /** 当前幅值倍率：感知值 → 1..6.24（Stevens 逆幂律，见 ADR-0004） */
+  /** 当前幅值倍率：感知值 → 0.315..14.62（Stevens 逆幂律，见 ADR-0004） */
   getGainFactor() {
     if (this.muted) return 0;
     const ratio = this.boost / 100;
@@ -128,7 +142,8 @@ class AudioEngine {
       boost: this.boost,
       muted: this.muted,
       engaged: !!this.source,
-      ctxState: this.ctx ? this.ctx.state : 'none'
+      ctxState: this.ctx ? this.ctx.state : 'none',
+      reduction: Math.round(this.getReduction() * 10) / 10
     };
   }
 }

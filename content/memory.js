@@ -34,7 +34,7 @@ const Memory = {
     if (!data.bank) data.bank = {};
     if (typeof data.enabled !== 'boolean') data.enabled = true;
     data.sc = this._normSc(data.sc);
-    // v1 → v2 迁移：旧增益是幅值百分比(100-500)，改为感知刻度（当前范围 50-300），
+    // v1 → v2 迁移：旧增益是幅值百分比(100-500)，改为感知刻度（当前范围 50-500），
     // 换算遵循 Stevens 幂律：新L = 100·(旧g/100)^0.6（见 docs/adr/0004），上限钳到 v2 时代上限 263
     if (!data.version || data.version < 2) {
       let changed = false;
