@@ -416,7 +416,7 @@ class BoostUI {
     display: flex; align-items: center; gap: 8px;
   }
   .bv-scale {
-    position: relative; width: 30px; height: 150px;
+    position: relative; width: 30px; height: 195px;
     font: 10px/1 'Helvetica Neue', 'PingFang SC', Arial, sans-serif;
     color: rgba(255,255,255,.65); user-select: none;
   }
@@ -430,7 +430,7 @@ class BoostUI {
   /* 极限区刻度：常亮琥珀色，未进入也能一眼看出分界位置 */
   .bv-scale span.bv-extreme-tick { color: rgba(255,176,32,.8); }
   .bv-track {
-    position: relative; width: 4px; height: 150px; border-radius: 3px;
+    position: relative; width: 4px; height: 195px; border-radius: 3px;
     /* 透明 padding 扩大热区（视觉仍 4px），便于抓取 */
     padding: 0 7px; background-clip: content-box;
     background: rgba(255,255,255,.25); cursor: pointer;
