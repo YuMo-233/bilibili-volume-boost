@@ -128,10 +128,50 @@
   let scOverlay = null;
   let scConfig = { enabled: true, position: 'top-right' };
 
-  /** 直播间号（URL 首段数字） */
+  /**
+   * 直播间号（URL 首段数字）。
+   * ⚠ 这可能是**短号**：直播接口只认真实房间号，短号会让请求直接失败
+   * （实测 getMessageList?room_id=短号 → code:-1「系统繁忙」），
+   * 故喂给取数前必须先经 realRoomId() 换算。
+   */
   function liveRoomId() {
     const m = location.pathname.match(/^\/(\d+)/);
     return m ? m[1] : null;
+  }
+
+  let resolvedPath = null;   // 已换算的路径号
+  let resolvedRoom = null;   // 换算出的真实房间号
+
+  /** 短号 → 真实房间号（room_init，免登录） */
+  async function fetchRealRoomId(pathId) {
+    try {
+      const res = await fetch(`https://api.live.bilibili.com/room/v1/Room/room_init?id=${encodeURIComponent(pathId)}`, {
+        credentials: 'include'
+      });
+      const json = await res.json();
+      const real = json && json.code === 0 && json.data && json.data.room_id;
+      return real ? String(real) : pathId;
+    } catch (_) {
+      return pathId;   // 失败时退回原值，行为与换算前一致
+    }
+  }
+
+  /**
+   * 当前房间的真实房间号。首次调用触发换算（期间返回 null），
+   * 换算完成后自行驱动一次 syncSC 把取数接着启动。
+   */
+  function realRoomId() {
+    const pathId = liveRoomId();
+    if (!pathId) return null;
+    if (resolvedPath === pathId) return resolvedRoom;
+    resolvedPath = pathId;
+    resolvedRoom = null;
+    fetchRealRoomId(pathId).then((real) => {
+      if (resolvedPath !== pathId) return;   // 换算期间又换了房，丢弃结果
+      resolvedRoom = real;
+      syncSC();
+    });
+    return null;
   }
 
   function scActive() {
@@ -159,8 +199,12 @@
     }
     scOverlay.setPosition(scConfig.position);
     if (!scOverlay.isMounted()) scOverlay.mount(); // 播放器重建后自动重挂
-    scFeed.setRoom(liveRoomId());
-    if (!scFeed.running) scFeed.start();
+    // 接口只认真实房间号：换算完成前先不启动取数，避免用短号整轮报错
+    const room = realRoomId();
+    if (room) {
+      scFeed.setRoom(room);
+      if (!scFeed.running) scFeed.start();
+    }
     if (document.fullscreenElement) scOverlay.show();
     else scOverlay.hide();
   }
