@@ -68,10 +68,14 @@
   }
 
   enableCheck.addEventListener('change', async () => {
-    const data = await loadGlobal();
-    data.enabled = enableCheck.checked;
+    // 先取用户意图：原实现先调 loadGlobal()，它会把复选框刷回存储里的旧值，
+    // 导致 data.enabled 读到的永远是旧状态 —— 总开关表现为"点了没反应"（已修复）
+    const next = enableCheck.checked;
+    const d = await chrome.storage.local.get(MEM_KEY);
+    const data = d[MEM_KEY] || { enabled: true, bank: {} };
+    data.enabled = next;
     await chrome.storage.local.set({ [MEM_KEY]: data });
-    boostEl.textContent = enableCheck.checked ? '—' : '已停用';
+    boostEl.textContent = next ? '—' : '已停用';
   });
 
   /** 写入醒目留言浮层配置（只动 sc 字段，不碰音量记忆） */
