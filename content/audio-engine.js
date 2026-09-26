@@ -9,13 +9,22 @@
  *   表现为页内换集后静默卡死。captureStream 是对解码后音频的**只读抽头**，不占槽位
  *   （实测：captureStream 之后再调 createMediaElementSource 仍成功），B 站建图不受影响。
  *
- * 代价与补偿（见 docs/adr/0002、0010）：
+ * 代价与补偿（见 docs/adr/0002、0010、0011）：
  * - captureStream 的音轨**不受元素 volume/muted 影响**（实测 vol=0/0.5/1 与 muted 下幅值不变），
  *   因此原生的"分层音量"要靠本引擎手工镜像：静音原元素避免双份声音，再把 B 站音量与静音
  *   意图乘到增益上，最终响度仍 = 原生音量 × 增益。
  * - 其中**静音意图**必须由 **MAIN world 的 sniff.js** 覆写 video.muted 取得：B 站在 MAIN world
  *   写 video.muted，而隔离世界对元素加的属性 MAIN world 看不见（跨世界隔离），故覆写不能放在
  *   本引擎里。本引擎只负责派发钩子请求、接收意图回传，并统一控制元素的真实静音。
+ *
+ * 抽头可发声判定与自愈（见 docs/adr/0011）：
+ * - 抽头是**唯一**声源：一旦静音原元素，用户能听到的声音只剩抽头这一路。因此绝不能在抽头
+ *   不可用时还静音原元素——那等于整页无声（历史 bug 的根因）。
+ *   故引入 **可发声判定**：仅当 上下文 running + MAIN world 静音钩子已就绪 + 抽头音轨确有声
+ *   （readyState==='live' 且未 muted）时，才静音原元素并放行本图增益；否则原元素保持原生发声、
+ *   本图增益归零（降级为"只有原生声音，无增益"，绝不无声）。
+ * - 抽头音轨会在**媒体源变化**时 ends（换源/换集/切清晰度），故监听音轨 'mute'/'unmute'/'ended'
+ *   与元素 'emptied'，就地**重抽（recapture）**；并周期性兜底校验抽头与元素真实静音状态。
  *
  * 全屏边界：captureStream 零 DOM/渲染改动，不影响 B 站原生沉浸全屏（见 docs/adr/0003）。
  *
@@ -44,8 +53,25 @@ class AudioEngine {
     this.nativeVolume = 1;   // 镜像：B 站原生音量（0-1）
     this.nativeMuted = false; // 镜像：B 站原生静音意图
     this._legacy = false;    // 无 captureStream 时回退 createMediaElementSource
-    this._onNativeMute = null; // B 站原生静音意图回传监听器（来自 MAIN world 钩子）
+
+    this._onNativeMute = null;   // B 站原生静音意图回传监听器（来自 MAIN world 钩子）
     this._onVolumeChange = null;
+    this._onSourceReset = null;  // 媒体源重置（emptied）监听器
+
+    this._tapTrack = null;       // 当前抽头音轨（用于生命周期监听）
+    this._tapLive = false;       // 可发声判定：抽头音轨当前确有声（live 且未 muted）
+    this._hookReady = false;     // MAIN world 静音钩子是否已就绪（回传过初始意图）
+    this._emitTap = false;       // 本图当前是否为唯一声源（决定增益是否放行）
+    this._watchdog = null;       // 周期兜底：校验抽头与元素真实静音
+    this._retapTimer = null;     // 重抽退避重试
+
+    // 抽头音轨事件（生命周期自愈）
+    this._onTapMute = () => { this._tapLive = false; this._updateOutput(); };
+    this._onTapUnmute = () => {
+      this._tapLive = !!(this._tapTrack && this._tapTrack.readyState === 'live' && !this._tapTrack.muted);
+      this._updateOutput();
+    };
+    this._onTapEnded = () => { this._tapLive = false; this._recapture(); };
   }
 
   /**
@@ -64,37 +90,28 @@ class AudioEngine {
       // 先记录 B 站当下的原生音量/静音意图，后续手工镜像
       this.nativeVolume = Number.isFinite(video.volume) ? video.volume : 1;
       this.nativeMuted = !!video.muted;
+      this._hookReady = false;
+      this._tapLive = false;
+
+      this._buildChain();
 
       if (typeof video.captureStream === 'function') {
         this._legacy = false;
-        const stream = video.captureStream();
-        if (!stream.getAudioTracks().length) {
-          try { stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
-          throw new Error('captureStream 未产出音轨');
-        }
-        this.stream = stream;
-        this.source = this.ctx.createMediaStreamSource(stream);
+        // 抽头取不到音轨（源尚未就绪等）→ 本次挂载失败，元素保持原生发声，等待下轮重试
+        if (!this._capture(video)) { this.teardown(); return false; }
       } else {
         this._legacy = true;
         this.source = this.ctx.createMediaElementSource(video);
+        this.source.connect(this.gainNode);
       }
 
-      this.gainNode = this.ctx.createGain();
-      this.comp = this.ctx.createDynamicsCompressor();
-      this.comp.threshold.value = -1;   // 约 -1dB 起限
-      this.comp.knee.value = 0;
-      this.comp.ratio.value = 20;       // 20:1 近限幅器
-      this.comp.attack.value = 0.001;   // 极短起音，消灭削波瞬态
-      this.comp.release.value = 0.25;
-      this.source.connect(this.gainNode);
-      this.gainNode.connect(this.comp);
-      this.comp.connect(this.ctx.destination);
       this.video = video;
 
       if (!this._legacy) {
         this._installHooks(video);
-        // 上下文状态变化（含用户手势后 resume）时同步原元素的静音
-        this.ctx.onstatechange = () => this._syncElementSilence();
+        // 上下文状态变化（含用户手势后 resume）时重算输出
+        this.ctx.onstatechange = () => this._updateOutput();
+        this._startWatchdog();
       }
 
       // 自动播放策略：上下文在用户激活前必然起不来，此时 resume() 只会被拒并留下
@@ -102,8 +119,7 @@ class AudioEngine {
       if (this.ctx.state === 'suspended' && this._canResume()) {
         this.ctx.resume().catch(() => {});
       }
-      if (!this._legacy) this._syncElementSilence();
-      this.apply();
+      this._updateOutput();
       return true;
     } catch (err) {
       console.warn('[BVBoost] 音频挂载失败', err);
@@ -111,15 +127,184 @@ class AudioEngine {
     }
   }
 
+  /** 建增益链：Gain → DynamicsCompressor → destination（幂等，重抽时复用） */
+  _buildChain() {
+    if (!this.gainNode) this.gainNode = this.ctx.createGain();
+    if (!this.comp) {
+      this.comp = this.ctx.createDynamicsCompressor();
+      this.comp.threshold.value = -1;   // 约 -1dB 起限
+      this.comp.knee.value = 0;
+      this.comp.ratio.value = 20;       // 20:1 近限幅器
+      this.comp.attack.value = 0.001;   // 极短起音，消灭削波瞬态
+      this.comp.release.value = 0.25;
+      this.gainNode.connect(this.comp);
+      this.comp.connect(this.ctx.destination);
+    }
+  }
+
+  /**
+   * 取一条 captureStream 抽头并接进增益链。
+   * 成功返回 true；无音轨或抛错返回 false（不改变已有图，交由调用方决定回退）。
+   */
+  _capture(video) {
+    let stream = null;
+    try {
+      stream = video.captureStream();
+      const track = stream.getAudioTracks()[0];
+      if (!track) {
+        try { stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+        return false;
+      }
+      this.stream = stream;
+      this.source = this.ctx.createMediaStreamSource(stream);
+      this.source.connect(this.gainNode);
+      this._wireTap(track);
+      this._tapLive = track.readyState === 'live' && !track.muted;
+      return true;
+    } catch (_) {
+      try { if (stream) stream.getTracks().forEach((t) => t.stop()); } catch (__) {}
+      return false;
+    }
+  }
+
+  /** 订阅抽头音轨生命周期（mute/unmute/ended） */
+  _wireTap(track) {
+    this._unwireTap();
+    this._tapTrack = track;
+    try {
+      track.addEventListener('mute', this._onTapMute);
+      track.addEventListener('unmute', this._onTapUnmute);
+      track.addEventListener('ended', this._onTapEnded);
+    } catch (_) {}
+  }
+
+  _unwireTap() {
+    const t = this._tapTrack;
+    if (t) {
+      try { t.removeEventListener('mute', this._onTapMute); } catch (_) {}
+      try { t.removeEventListener('unmute', this._onTapUnmute); } catch (_) {}
+      try { t.removeEventListener('ended', this._onTapEnded); } catch (_) {}
+    }
+    this._tapTrack = null;
+  }
+
+  /**
+   * 就地重抽：媒体源变化后旧抽头音轨已失效，用同一 video 重新取一条抽头接回原增益链。
+   * 取不到（源尚在切换）时先恢复元素原生发声，并退避重试，避免任何无声窗口。
+   */
+  _recapture() {
+    if (this._legacy || !this.video || !this.ctx) return;
+    const v = this.video;
+    try { if (this.source) this.source.disconnect(); } catch (_) {}
+    try { if (this.stream) this.stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+    this.source = null;
+    this.stream = null;
+    this._unwireTap();
+    this._tapLive = false;
+    if (this._capture(v)) { this._updateOutput(); return; }
+    this._updateOutput();       // 抽头暂不可用：立刻恢复原生发声
+    this._scheduleRetap(0);
+  }
+
+  _scheduleRetap(attempt) {
+    clearTimeout(this._retapTimer);
+    if (attempt > 6 || this._legacy || !this.video) return;
+    this._retapTimer = setTimeout(() => {
+      if (this._legacy || !this.video) return;
+      if (this._capture(this.video)) this._updateOutput();
+      else this._scheduleRetap(attempt + 1);
+    }, 400 * (attempt + 1));
+  }
+
+  /**
+   * 登记目标元素并接通跨世界钩子：
+   * - 静音意图：给元素打上 data-bv-target 标记，请 MAIN world（sniff.js）覆写其 muted 记录
+   *   B 站意图，并通过 bv_boost_muted 事件回传（跨世界隔离，覆写无法在本引擎内完成）。
+   * - 音量：无需跨世界，直接读现值 + 监听 volumechange 镜像。
+   * 元素真实静音由本引擎统一控制（见 _updateOutput），钩子只负责记录意图。
+   */
+  _installHooks(video) {
+    const self = this;
+    this._onNativeMute = (e) => {
+      const m = e && e.detail ? e.detail.muted : undefined;
+      if (typeof m === 'boolean') {
+        self.nativeMuted = m;
+        self._hookReady = true;   // 钩子已就绪：其后才允许静音原元素接管
+        self._updateOutput();
+      }
+    };
+    window.addEventListener('bv_boost_muted', this._onNativeMute);
+
+    this._onVolumeChange = () => {
+      self.nativeVolume = Number.isFinite(video.volume) ? video.volume : self.nativeVolume;
+      self._updateOutput();
+    };
+    video.addEventListener('volumechange', this._onVolumeChange);
+
+    // 媒体验源（换源/换集/清空）→ 抽头音轨随之失效，就地重抽
+    this._onSourceReset = () => {
+      self._tapLive = false;
+      self._updateOutput();
+      self._scheduleRetap(0);
+    };
+    video.addEventListener('emptied', this._onSourceReset);
+
+    // 打标记属性即触发 MAIN world 安装 muted 钩子（见 sniff.js 的 MutationObserver）；
+    // 属性值携带"引擎在接管前捕获的 B 站真实静音意图"（'1'/'0'），作为钩子初始意图——
+    // 钩子绝不能去读元素当下的 muted，因为引擎随后就会把它强制置真。
+    try { video.setAttribute('data-bv-target', this.nativeMuted ? '1' : '0'); } catch (_) {}
+  }
+
+  /** 周期兜底：抽头断了就重抽；元素真实静音被绕过钩子改动时纠偏 */
+  _startWatchdog() {
+    clearInterval(this._watchdog);
+    this._watchdog = setInterval(() => {
+      if (this._legacy || !this.video) return;
+      const t = this._tapTrack;
+      if (t && t.readyState === 'ended') { this._recapture(); return; }
+      this._tapLive = !!(t && t.readyState === 'live' && !t.muted);
+      this._updateOutput();
+    }, 1500);
+  }
+
+  /**
+   * 重算并落地输出状态（可发声判定，见头部说明）。
+   * 静音原元素当且仅当"本图确实是唯一声源"（钩子就绪 + 抽头确有声 + 上下文 running），
+   * 否则原元素保持原生发声、本图增益归零——保证任何情况下都不出现整页无声。
+   */
+  _updateOutput() {
+    const running = !!(this.ctx && this.ctx.state === 'running');
+    const tapUsable = !this._legacy && running && this._hookReady && this._tapLive;
+    const pluginMuted = !!this.muted;
+
+    if (!this._legacy && this.video) {
+      const target = (pluginMuted || tapUsable) ? true : this.nativeMuted;
+      try { this.video.muted = target; } catch (_) {}
+    }
+    // 本图放行增益的条件：回退路径恒放行；抽头路径仅当自己是唯一声源且插件未静音
+    this._emitTap = this._legacy ? true : (tapUsable && !pluginMuted);
+    this.apply();
+  }
+
   /** 断开音频图（video 恢复原生直通播放，不受任何影响） */
   teardown() {
     const v = this.video;
+    clearInterval(this._watchdog);
+    clearTimeout(this._retapTimer);
+    this._watchdog = null;
+    this._retapTimer = null;
+
     if (this._onNativeMute) {
       try { window.removeEventListener('bv_boost_muted', this._onNativeMute); } catch (_) {}
     }
     if (v && this._onVolumeChange) {
       try { v.removeEventListener('volumechange', this._onVolumeChange); } catch (_) {}
     }
+    if (v && this._onSourceReset) {
+      try { v.removeEventListener('emptied', this._onSourceReset); } catch (_) {}
+    }
+    this._unwireTap();
+
     if (v && !this._legacy) {
       // 先把实际静音还原为 B 站意图，再移除标记属性（触发 MAIN world 卸下 muted 钩子）
       try { v.muted = !!this.nativeMuted; } catch (_) {}
@@ -135,53 +320,13 @@ class AudioEngine {
     }
     this._onNativeMute = null;
     this._onVolumeChange = null;
+    this._onSourceReset = null;
     this.comp = null;
     this.gainNode = null;
     this.video = null;
-  }
-
-  /**
-   * 登记目标元素并接通跨世界钩子：
-   * - 静音意图：给元素打上 data-bv-target 标记，请 MAIN world（sniff.js）覆写其 muted 记录
-   *   B 站意图，并通过 bv_boost_muted 事件回传（跨世界隔离，覆写无法在本引擎内完成）。
-   * - 音量：无需跨世界，直接读现值 + 监听 volumechange 镜像。
-   * 元素的**真实静音**由本引擎统一控制（见 _syncElementSilence），钩子只负责记录意图。
-   */
-  _installHooks(video) {
-    const self = this;
-    this._onNativeMute = (e) => {
-      const m = e && e.detail ? e.detail.muted : undefined;
-      if (typeof m === 'boolean') { self.nativeMuted = m; self.apply(); }
-    };
-    window.addEventListener('bv_boost_muted', this._onNativeMute);
-
-    this._onVolumeChange = () => {
-      self.nativeVolume = Number.isFinite(video.volume) ? video.volume : self.nativeVolume;
-      // 安全网：万一 MAIN world 钩子缺失，B 站取消静音会让原元素真的出声（双份声音），
-      // 这里在出声期间把真实静音重新压回 true；钩子在位时该真实值不会被 B 站改动，本句为惰性。
-      if (!self._legacy && self.ctx && self.ctx.state === 'running' && video.muted !== true) {
-        try { video.muted = true; } catch (_) {}
-      }
-      self.apply();
-    };
-    video.addEventListener('volumechange', this._onVolumeChange);
-
-    // 打标记属性即触发 MAIN world 安装 muted 钩子（见 sniff.js 的 MutationObserver）；
-    // 属性值携带"引擎在接管前捕获的 B 站真实静音意图"（'1'/'0'），作为钩子初始意图——
-    // 钩子绝不能去读元素当下的 muted，因为引擎随后就会把它强制置真。
-    try { video.setAttribute('data-bv-target', this.nativeMuted ? '1' : '0'); } catch (_) {}
-  }
-
-  /**
-   * 同步原元素的真实静音：仅当本引擎确实在出声（ctx running）时才静音原元素，
-   * 否则会出现"元素已静音 + 我们还没输出"= 全哑的窗口（如用户手势之前）。
-   * 这里直接写 video.muted（隔离世界的写不会经过 MAIN world 钩子），对 B 站不可见。
-   */
-  _syncElementSilence() {
-    if (this._legacy || !this.video) return;
-    const running = !!(this.ctx && this.ctx.state === 'running');
-    const target = running ? true : this.nativeMuted;
-    try { this.video.muted = target; } catch (_) {}
+    this._hookReady = false;
+    this._tapLive = false;
+    this._emitTap = false;
   }
 
   /**
@@ -198,7 +343,7 @@ class AudioEngine {
     return !!(v && !v.paused && !v.ended);
   }
 
-  /** 用户手势时兜底恢复 AudioContext（首次播放/点击页面）；resume 后 onstatechange 会自动静音原元素 */
+  /** 用户手势时兜底恢复 AudioContext（首次播放/点击页面）；resume 后 onstatechange 会重算输出 */
   resumeOnUserGesture() {
     if (this.ctx && this.ctx.state === 'suspended' && this._canResume()) {
       this.ctx.resume().catch(() => {});
@@ -237,7 +382,7 @@ class AudioEngine {
     return Number.isFinite(r) ? Math.abs(r) : 0;
   }
 
-  setMuted(m) { this.muted = !!m; this.apply(); }
+  setMuted(m) { this.muted = !!m; this._updateOutput(); }
 
   toggleMute() { this.setMuted(!this.muted); return this.muted; }
 
@@ -245,12 +390,14 @@ class AudioEngine {
    * 当前幅值倍率 = 增益倍率 × 原生音量层（Stevens 逆幂律，见 ADR-0004）。
    * capture 路径下 captureStream 不受元素 volume/muted 影响，故必须手工乘上镜像层，
    * 才能维持 ADR-0002 的"最终响度 = 原生音量 × 增益"；回退路径由元素自身施加原生音量层。
+   * 抽头不可用时（_emitTap=false）本图必须不出声，否则会与原生声音叠加成双份。
    */
   getGainFactor() {
     if (this.muted) return 0;
     const ratio = this.boost / 100;
     const boostF = Math.pow(ratio, 5 / 3); // L^0.6 的逆运算
     if (this._legacy) return boostF;
+    if (!this._emitTap) return 0;          // 非唯一声源：本图静默，交由原元素发声
     const vol = Number.isFinite(this.nativeVolume) ? this.nativeVolume : 1;
     const g = boostF * (this.nativeMuted ? 0 : vol);
     return Number.isFinite(g) ? g : 1;
@@ -274,6 +421,9 @@ class AudioEngine {
       mode: this._legacy ? 'element' : 'capture',
       nativeVolume: Math.round(this.nativeVolume * 100) / 100,
       nativeMuted: this.nativeMuted,
+      hookReady: this._hookReady,
+      tapLive: this._tapLive,
+      emitTap: this._emitTap,
       ctxState: this.ctx ? this.ctx.state : 'none',
       reduction: Math.round(this.getReduction() * 10) / 10
     };

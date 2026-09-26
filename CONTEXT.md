@@ -98,6 +98,14 @@ _Avoid_: 绑定、连接
 `HTMLMediaElement.captureStream()` 产出的一条**只读**音频轨：它是解码后原始音频，既不占用元素的音频槽位、也不受元素 `volume`/`muted` 影响。因不占槽位，B 站自建的 `MediaElementAudioSourceNode` 可正常创建，从而规避页内换集卡死（见 docs/adr/0010）；代价是原生音量层需由插件镜像（见 docs/adr/0002）。
 _Avoid_: 录制、监听
 
+**抽头可发声判定（Tap Audibility Gate）**:
+抽头路径下「原元素可否被静音」的唯一判据：仅当「音频上下文 running **且** MAIN world 静音钩子已就绪 **且** 抽头音轨确有声（`readyState==='live'` 且未 `muted`）」三者同时成立，才静音原元素并放行本图增益；否则原元素保持原生发声、本图增益归零（降级为"只有原生声音、无增益"）。抽头是静音原元素后的唯一声源，抽头不可用仍静音原元素即整页无声（见 docs/adr/0011）。
+_Avoid_: 接管判定、就绪判定
+
+**重抽（Recapture）**:
+抽头音轨在媒体源变化（换源 / 换集 / 切清晰度）后 `ended` 时，用同一 video 重新取一条 `captureStream()` 抽头接回原增益链的过程；取不到则先恢复原生发声再退避重试，杜绝无声窗口（见 docs/adr/0011）。
+_Avoid_: 重挂、重新捕获
+
 **独占槽位（Exclusive Slot）**:
 一个 `HTMLMediaElement` 至多对应一个 `MediaElementAudioSourceNode`，且**创建后不可释放**——重复创建抛 `InvalidStateError: HTMLMediaElement already connected previously`。插件若抢占它，B 站后续自建音频图会失败并卡死播放，这是本插件已弃用的机制（见 docs/adr/0010）。
 _Avoid_: 音频通道、端口

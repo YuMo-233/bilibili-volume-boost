@@ -413,6 +413,7 @@
         document.documentElement.setAttribute('data-bv-dbg', JSON.stringify({
           mid: current.mid, type: current.type, name: current.name,
           boost: engine.boost, engaged: engine.getState().engaged,
+          eng: engine.getState(),
           lastApplied,
           enabled: data.enabled, bank: data.bank,
           sc: scState(), scCfg: data.sc,
