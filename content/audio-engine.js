@@ -77,6 +77,9 @@ class AudioEngine {
     this._boostAt = 0;           // 诊断：增益首次真正放行时刻
     this._wasEmitTap = false;
     this._lastResumeTry = 0;     // resume 节流：避免策略拒绝时反复尝试/留告警
+    this._playAt = 0;            // 诊断：媒体首次可播（readyState≥3 且未暂停）
+    this._runningAt = 0;         // 诊断：上下文首次 running
+    this._resumeFails = 0;       // 诊断：resume() 被自动播放策略拒绝的次数
 
     // 抽头音轨事件（生命周期自愈）
     this._onTapMute = () => { this._tapLive = false; this._updateOutput(); };
@@ -321,6 +324,7 @@ class AudioEngine {
     if (this._legacy || !this.video) return;
     this._tryResume();   // 媒体一开播就尽快恢复上下文，缩短起播接管延迟
     const v = this.video;
+    if (!this._playAt && !v.paused && !v.ended && v.readyState >= 3) this._playAt = this._now();
     const t0 = this._tapTrack;
     if (t0 && t0.readyState === 'ended') { this._recapture(); return; }
 
@@ -363,6 +367,7 @@ class AudioEngine {
    */
   _updateOutput() {
     const running = !!(this.ctx && this.ctx.state === 'running');
+    if (running && !this._runningAt) this._runningAt = this._now();
     const tapUsable = !this._legacy && running && this._hookReady && this._tapLive
       && this._tapProven && !this._noBoost;
     const pluginMuted = !!this.muted;
@@ -431,6 +436,9 @@ class AudioEngine {
     this._boostAt = 0;
     this._wasEmitTap = false;
     this._lastResumeTry = 0;
+    this._playAt = 0;
+    this._runningAt = 0;
+    this._resumeFails = 0;
   }
 
   /**
@@ -451,7 +459,7 @@ class AudioEngine {
   resumeOnUserGesture() {
     if (this.ctx && this.ctx.state === 'suspended' && this._canResume()) {
       this._lastResumeTry = Date.now();
-      this.ctx.resume().catch(() => {});
+      this.ctx.resume().catch(() => { this._resumeFails++; });
     }
   }
 
@@ -465,7 +473,7 @@ class AudioEngine {
     const now = Date.now();
     if (now - this._lastResumeTry < 800) return;
     this._lastResumeTry = now;
-    if (this._canResume()) this.ctx.resume().catch(() => {});
+    if (this._canResume()) this.ctx.resume().catch(() => { this._resumeFails++; });
   }
 
   /** 音频管线是否已挂载（供内容脚本守卫使用；注意 ≠ getState().engaged 的临时属性） */
@@ -547,8 +555,11 @@ class AudioEngine {
       tapProven: this._tapProven,
       noBoost: this._noBoost,
       attachMs: Math.round(this._attachAt),
+      playMs: Math.round(this._playAt),
+      runningMs: Math.round(this._runningAt),
       provenMs: Math.round(this._provenAt),
       boostMs: Math.round(this._boostAt),
+      resumeFails: this._resumeFails,
       ctxState: this.ctx ? this.ctx.state : 'none',
       reduction: Math.round(this.getReduction() * 10) / 10
     };
