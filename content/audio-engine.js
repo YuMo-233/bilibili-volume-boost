@@ -80,6 +80,7 @@ class AudioEngine {
     this._playAt = 0;            // 诊断：媒体首次可播（readyState≥3 且未暂停）
     this._runningAt = 0;         // 诊断：上下文首次 running
     this._resumeFails = 0;       // 诊断：resume() 被自动播放策略拒绝的次数
+    this._wasShouldSound = false; // 边沿检测：shouldSound 由假变真（播放刚起）
 
     // 抽头音轨事件（生命周期自愈）
     this._onTapMute = () => { this._tapLive = false; this._updateOutput(); };
@@ -328,11 +329,17 @@ class AudioEngine {
     const t0 = this._tapTrack;
     if (t0 && t0.readyState === 'ended') { this._recapture(); return; }
 
-    const peak = this._tapPeak();
-    this._lastPeak = peak;
     const running = !!(this.ctx && this.ctx.state === 'running');
     const shouldSound = running && !v.paused && !v.ended && v.readyState >= 3 &&
       !this.muted && !this.nativeMuted && this.nativeVolume > 0;
+
+    // 播放刚起且抽头尚未证明有声：早期（媒体未就绪时）创建的抽头可能一直是静音，
+    // 立即换一条新鲜抽头，避免干等"无声阈值"而让起播多等约 2s。
+    if (shouldSound && !this._wasShouldSound && !this._tapProven) this._recapture();
+    this._wasShouldSound = shouldSound;
+
+    const peak = this._tapPeak();
+    this._lastPeak = peak;
 
     if (peak > AudioEngine.SILENCE_EPS) {
       if (!this._tapProven) this._provenAt = this._now();
@@ -342,7 +349,8 @@ class AudioEngine {
       this._noBoost = false;   // 抽头确有信号 → 立即恢复接管
     } else if (shouldSound) {
       if (!this._silentSince) this._silentSince = Date.now();
-      if (Date.now() - this._silentSince > 2000) {
+      const wait = this._recaptureCount === 0 ? 400 : 1500;   // 首次重抽要快（修早期静音抽头）
+      if (Date.now() - this._silentSince > wait) {
         if (this._recaptureCount < 3) {
           this._recaptureCount++;
           this._silentSince = Date.now();
@@ -439,6 +447,7 @@ class AudioEngine {
     this._playAt = 0;
     this._runningAt = 0;
     this._resumeFails = 0;
+    this._wasShouldSound = false;
   }
 
   /**
