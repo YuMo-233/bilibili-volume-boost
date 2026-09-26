@@ -295,43 +295,52 @@ class AudioEngine {
    *    降级为原生发声（只失去增益，绝不无声）；信号一旦回来立即恢复接管。
    */
   _startWatchdog() {
-    clearInterval(this._watchdog);
-    this._watchdog = setInterval(() => {
-      if (this._legacy || !this.video) return;
-      const v = this.video;
-      const t0 = this._tapTrack;
-      if (t0 && t0.readyState === 'ended') { this._recapture(); return; }
+    clearTimeout(this._watchdog);
+    const tick = () => {
+      this._watchdogTick();
+      // 未证明/降级期加密采样（尽快接管或尽快恢复），稳定后降到 500ms
+      const fast = !this._tapProven || this._noBoost;
+      this._watchdog = setTimeout(tick, fast ? 120 : 500);
+    };
+    this._watchdog = setTimeout(tick, 0);   // 挂载后立即先测一次，缩短起播接管延迟
+  }
 
-      const peak = this._tapPeak();
-      this._lastPeak = peak;
-      const running = !!(this.ctx && this.ctx.state === 'running');
-      const shouldSound = running && !v.paused && !v.ended && v.readyState >= 3 &&
-        !this.muted && !this.nativeMuted && this.nativeVolume > 0;
+  /** 单次兜底采样（内容级可发声判定，由 _startWatchdog 自适应节流驱动） */
+  _watchdogTick() {
+    if (this._legacy || !this.video) return;
+    const v = this.video;
+    const t0 = this._tapTrack;
+    if (t0 && t0.readyState === 'ended') { this._recapture(); return; }
 
-      if (peak > AudioEngine.SILENCE_EPS) {
-        this._tapProven = true;
-        this._silentSince = 0;
-        this._recaptureCount = 0;
-        this._noBoost = false;   // 抽头确有信号 → 立即恢复接管
-      } else if (shouldSound) {
-        if (!this._silentSince) this._silentSince = Date.now();
-        if (Date.now() - this._silentSince > 2000) {
-          if (this._recaptureCount < 3) {
-            this._recaptureCount++;
-            this._silentSince = Date.now();
-            this._recapture();
-          } else {
-            this._noBoost = true;   // 重抽仍无声 → 判定抽头不可用，降级原生发声
-          }
+    const peak = this._tapPeak();
+    this._lastPeak = peak;
+    const running = !!(this.ctx && this.ctx.state === 'running');
+    const shouldSound = running && !v.paused && !v.ended && v.readyState >= 3 &&
+      !this.muted && !this.nativeMuted && this.nativeVolume > 0;
+
+    if (peak > AudioEngine.SILENCE_EPS) {
+      this._tapProven = true;
+      this._silentSince = 0;
+      this._recaptureCount = 0;
+      this._noBoost = false;   // 抽头确有信号 → 立即恢复接管
+    } else if (shouldSound) {
+      if (!this._silentSince) this._silentSince = Date.now();
+      if (Date.now() - this._silentSince > 2000) {
+        if (this._recaptureCount < 3) {
+          this._recaptureCount++;
+          this._silentSince = Date.now();
+          this._recapture();
+        } else {
+          this._noBoost = true;   // 重抽仍无声 → 判定抽头不可用，降级原生发声
         }
-      } else {
-        this._silentSince = 0;
       }
+    } else {
+      this._silentSince = 0;
+    }
 
-      const cur = this._tapTrack;
-      this._tapLive = !!(cur && cur.readyState === 'live' && !cur.muted);
-      this._updateOutput();
-    }, 500);
+    const cur = this._tapTrack;
+    this._tapLive = !!(cur && cur.readyState === 'live' && !cur.muted);
+    this._updateOutput();
   }
 
   /**
@@ -357,7 +366,7 @@ class AudioEngine {
   /** 断开音频图（video 恢复原生直通播放，不受任何影响） */
   teardown() {
     const v = this.video;
-    clearInterval(this._watchdog);
+    clearTimeout(this._watchdog);
     clearTimeout(this._retapTimer);
     this._watchdog = null;
     this._retapTimer = null;

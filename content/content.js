@@ -254,11 +254,13 @@
   }
 
   let lastVideo = null;
+  let attachRetries = 0;   // attach 失败（多为媒体尚无音轨）时的短促重试计数
   function bindVideo() {
     if (SEARCH_ONLY) return; // 搜索页不接管播放器
     if (!enabled) return;
     const video = findVideo();
     if (!video) return;
+    if (video !== lastVideo) attachRetries = 0;
     if (video === lastVideo && engine.engaged) {
       engine.resumeOnUserGesture(); // 播放中手势恢复
       applyMemoryGain();            // mid 事件可能晚于引擎挂载到达，这里兜底应用一次
@@ -266,8 +268,16 @@
     }
     if (engine.attach(video)) {
       lastVideo = video;
+      attachRetries = 0;
       ensureUI();
       applyMemoryGain();
+      return;
+    }
+    // 挂载失败（多为媒体尚无音轨）：短促重试，避免干等 2s 轮询导致起播无增益
+    if (attachRetries < 10) {
+      attachRetries++;
+      clearTimeout(bindVideo._t);
+      bindVideo._t = setTimeout(() => { bindVideo(); }, 120);
     }
   }
 
