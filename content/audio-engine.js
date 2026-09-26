@@ -76,6 +76,7 @@ class AudioEngine {
     this._provenAt = 0;          // 诊断：抽头首次被证明有声时刻
     this._boostAt = 0;           // 诊断：增益首次真正放行时刻
     this._wasEmitTap = false;
+    this._lastResumeTry = 0;     // resume 节流：避免策略拒绝时反复尝试/留告警
 
     // 抽头音轨事件（生命周期自愈）
     this._onTapMute = () => { this._tapLive = false; this._updateOutput(); };
@@ -318,6 +319,7 @@ class AudioEngine {
   /** 单次兜底采样（内容级可发声判定，由 _startWatchdog 自适应节流驱动） */
   _watchdogTick() {
     if (this._legacy || !this.video) return;
+    this._tryResume();   // 媒体一开播就尽快恢复上下文，缩短起播接管延迟
     const v = this.video;
     const t0 = this._tapTrack;
     if (t0 && t0.readyState === 'ended') { this._recapture(); return; }
@@ -428,6 +430,7 @@ class AudioEngine {
     this._provenAt = 0;
     this._boostAt = 0;
     this._wasEmitTap = false;
+    this._lastResumeTry = 0;
   }
 
   /**
@@ -447,8 +450,22 @@ class AudioEngine {
   /** 用户手势时兜底恢复 AudioContext（首次播放/点击页面）；resume 后 onstatechange 会重算输出 */
   resumeOnUserGesture() {
     if (this.ctx && this.ctx.state === 'suspended' && this._canResume()) {
+      this._lastResumeTry = Date.now();
       this.ctx.resume().catch(() => {});
     }
+  }
+
+  /**
+   * 节流式恢复上下文：媒体一旦开始播放（或页面已获激活）就尽快 resume，
+   * 让增益在起播瞬间即可接管，而不是干等用户点击。800ms 节流避免被策略拒绝时反复留告警。
+   * 上下文 running 之前 Analyser 无数据 → 抽头无法"证实有声" → 增益起不来，故必须尽早 resume。
+   */
+  _tryResume() {
+    if (!this.ctx || this.ctx.state !== 'suspended') return;
+    const now = Date.now();
+    if (now - this._lastResumeTry < 800) return;
+    this._lastResumeTry = now;
+    if (this._canResume()) this.ctx.resume().catch(() => {});
   }
 
   /** 音频管线是否已挂载（供内容脚本守卫使用；注意 ≠ getState().engaged 的临时属性） */
