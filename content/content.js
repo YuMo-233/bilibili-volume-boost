@@ -277,7 +277,7 @@
     if (attachRetries < 10) {
       attachRetries++;
       clearTimeout(bindVideo._t);
-      bindVideo._t = setTimeout(() => { bindVideo(); }, 120);
+      bindVideo._t = setTimeout(() => { bindVideo(); }, 100);
     }
   }
 

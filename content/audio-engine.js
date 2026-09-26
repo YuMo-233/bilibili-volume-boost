@@ -72,6 +72,10 @@ class AudioEngine {
     this._noBoost = false;       // 抽头持续无声 → 降级原生发声，不再接管
     this._silentSince = 0;       // 媒体在播但抽头连续无声的起点
     this._recaptureCount = 0;    // 连续重抽次数
+    this._attachAt = 0;          // 诊断：挂载完成时刻（ms，自页面导航起）
+    this._provenAt = 0;          // 诊断：抽头首次被证明有声时刻
+    this._boostAt = 0;           // 诊断：增益首次真正放行时刻
+    this._wasEmitTap = false;
 
     // 抽头音轨事件（生命周期自愈）
     this._onTapMute = () => { this._tapLive = false; this._updateOutput(); };
@@ -127,6 +131,7 @@ class AudioEngine {
       if (this.ctx.state === 'suspended' && this._canResume()) {
         this.ctx.resume().catch(() => {});
       }
+      this._attachAt = this._now();
       this._updateOutput();
       return true;
     } catch (err) {
@@ -272,6 +277,11 @@ class AudioEngine {
     try { video.setAttribute('data-bv-target', this.nativeMuted ? '1' : '0'); } catch (_) {}
   }
 
+  /** 诊断时间戳基准：优先 performance.now()（自页面导航起），否则 Date.now() */
+  _now() {
+    try { return performance.now(); } catch (_) { return Date.now(); }
+  }
+
   /** 抽头原始信号峰值（0..1；即静音门槛之上是否有声）。无分析器返回 0 */
   _tapPeak() {
     if (!this._analyser || !this._anBuf) return 0;
@@ -300,7 +310,7 @@ class AudioEngine {
       this._watchdogTick();
       // 未证明/降级期加密采样（尽快接管或尽快恢复），稳定后降到 500ms
       const fast = !this._tapProven || this._noBoost;
-      this._watchdog = setTimeout(tick, fast ? 120 : 500);
+      this._watchdog = setTimeout(tick, fast ? 50 : 500);
     };
     this._watchdog = setTimeout(tick, 0);   // 挂载后立即先测一次，缩短起播接管延迟
   }
@@ -319,6 +329,7 @@ class AudioEngine {
       !this.muted && !this.nativeMuted && this.nativeVolume > 0;
 
     if (peak > AudioEngine.SILENCE_EPS) {
+      if (!this._tapProven) this._provenAt = this._now();
       this._tapProven = true;
       this._silentSince = 0;
       this._recaptureCount = 0;
@@ -360,6 +371,8 @@ class AudioEngine {
     }
     // 本图放行增益的条件：回退路径恒放行；抽头路径仅当自己是唯一声源且插件未静音
     this._emitTap = this._legacy ? true : (tapUsable && !pluginMuted);
+    if (this._emitTap && !this._wasEmitTap) this._boostAt = this._now();
+    this._wasEmitTap = this._emitTap;
     this.apply();
   }
 
@@ -411,6 +424,10 @@ class AudioEngine {
     this._noBoost = false;
     this._silentSince = 0;
     this._recaptureCount = 0;
+    this._attachAt = 0;
+    this._provenAt = 0;
+    this._boostAt = 0;
+    this._wasEmitTap = false;
   }
 
   /**
@@ -512,6 +529,9 @@ class AudioEngine {
       tapPeak: Math.round(this._lastPeak * 10000) / 10000,
       tapProven: this._tapProven,
       noBoost: this._noBoost,
+      attachMs: Math.round(this._attachAt),
+      provenMs: Math.round(this._provenAt),
+      boostMs: Math.round(this._boostAt),
       ctxState: this.ctx ? this.ctx.state : 'none',
       reduction: Math.round(this.getReduction() * 10) / 10
     };
