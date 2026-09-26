@@ -9,3 +9,5 @@
 **自动播放策略（resume 时机）**: 页面内方案必然要面对 `AudioContext` 的自动播放策略——在用户激活之前，新建的上下文处于 `suspended`，此时调 `resume()` 会被浏览器拒绝，并在控制台留下 `The AudioContext was not allowed to start` 提示。因此 `resume()` 只在两种**放行无疑**的时机调用：页面已获得用户激活（首次点击后 sticky activation 恒为真），或该源已被允许自动播放（MEI 等，表现为 video 正在正常出声）。首次交互前的 resume 交给 `pointerdown` 监听（见 `AudioEngine._canResume`）。
 
 **对后人的警告**: 不要为了省事改用 tabCapture——那会直接摧毁沉浸全屏，回到本插件存在的对立面。
+
+**修订（见 0010）**: 决策中的音频源节点已不再是 `MediaElementAudioSourceNode`。因它**独占且不可释放**，会堵死 B 站自建音频图、导致页内换集静默卡死，现已改用 `video.captureStream()` 抽头 + `MediaStreamAudioSourceNode`（不占槽位）。"页面内 Web Audio、不碰标签页音频"这一核心决策不变。

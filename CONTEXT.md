@@ -29,7 +29,7 @@ _Avoid_: 基础音量
 _Avoid_: 增强音量、boost 层
 
 **总响度**:
-播放器实际输出的音量，等于「原生音量 × 增益」。只有增益超过 100% 时插件才介入音频管线。
+播放器实际输出的音量，等于「原生音量 × 增益」。启用插件（总开关打开）即接入音频管线，与增益是否偏离 100% 无关。
 
 **削波（Clipping）**:
 增益过高时波形峰值超过满刻度被硬切造成的爆音/噼啪失真。插件通过压缩限幅防止。
@@ -91,8 +91,16 @@ _Avoid_: 降级、超时
 _Avoid_: 卡住、悬停状态
 
 **音频源挂载（Source Attachment）**:
-将 `MediaElementAudioSourceNode` 连接到播放器 video 元素的过程。B 站切换清晰度/切流会重建 video 元素，需要监听并自动重挂，避免多路音频叠加。
+将播放器 video 的音频接入插件 Web Audio 管线（`captureStream()` 抽头 → `MediaStreamAudioSourceNode`）的过程。B 站切换清晰度/切流会重建 video 元素，需要监听并自动重挂，避免多路音频叠加（见 docs/adr/0010）。
 _Avoid_: 绑定、连接
+
+**捕获抽头（Capture Tap）**:
+`HTMLMediaElement.captureStream()` 产出的一条**只读**音频轨：它是解码后原始音频，既不占用元素的音频槽位、也不受元素 `volume`/`muted` 影响。因不占槽位，B 站自建的 `MediaElementAudioSourceNode` 可正常创建，从而规避页内换集卡死（见 docs/adr/0010）；代价是原生音量层需由插件镜像（见 docs/adr/0002）。
+_Avoid_: 录制、监听
+
+**独占槽位（Exclusive Slot）**:
+一个 `HTMLMediaElement` 至多对应一个 `MediaElementAudioSourceNode`，且**创建后不可释放**——重复创建抛 `InvalidStateError: HTMLMediaElement already connected previously`。插件若抢占它，B 站后续自建音频图会失败并卡死播放，这是本插件已弃用的机制（见 docs/adr/0010）。
+_Avoid_: 音频通道、端口
 
 **重挂（Reattachment）**:
 video 元素被 B 站重建后，断开旧音频源并重新挂载新 video 的过程。

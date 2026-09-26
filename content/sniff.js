@@ -77,4 +77,63 @@
   if (!readOnce()) {
     [500, 1500, 3000, 6000].forEach((ms) => setTimeout(() => readOnce(), ms));
   }
+
+  // ---------------------------------------------------------------------------
+  // B 站原生静音镜像（MAIN world 钩子，见 docs/adr/0010）
+  //
+  // 引擎改用 captureStream 抽头后，抽头信号不受 video.muted 影响，原生静音层需引擎手工镜像；
+  // 而 B 站在 MAIN world 写 video.muted，隔离世界对元素加的属性 MAIN world 看不见（跨世界隔离），
+  // 故覆写必须发生在 MAIN world：对 B 站谎报"意图"，元素真实静音与否交给引擎统一控制。
+  //
+  // 协议：
+  // - 引擎挂载时给目标 video 打上 data-bv-target 属性、卸载时移除；本模块用 MutationObserver
+  //   监听该属性（属性是真实 DOM 状态，必然跨世界可见，比事件桥更稳），据此装/卸钩子。
+  // - 覆写后 getter 返回 B 站意图、setter 只记录意图（不写真实值，避免与引擎的强制静音打架
+  //   而产生双份声音）。
+  // - 意图任何变化（含初次）都以 bv_boost_muted{muted} 回传引擎。
+  // ---------------------------------------------------------------------------
+  const hookedMuted = new Map(); // element -> { desc, intent }
+
+  const installMutedHook = (el) => {
+    if (!el || hookedMuted.has(el)) return;
+    const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'muted');
+    if (!desc || typeof desc.get !== 'function' || typeof desc.set !== 'function') return;
+    const rec = { desc, intent: !!desc.get.call(el) };
+    try {
+      Object.defineProperty(el, 'muted', {
+        configurable: true,
+        enumerable: !!desc.enumerable,
+        get() { return rec.intent; },
+        set(v) {
+          rec.intent = !!v;
+          window.dispatchEvent(new CustomEvent('bv_boost_muted', { detail: { muted: rec.intent } }));
+        }
+      });
+    } catch (_) { return; }
+    hookedMuted.set(el, rec);
+    window.dispatchEvent(new CustomEvent('bv_boost_muted', { detail: { muted: rec.intent } }));
+  };
+
+  const removeMutedHook = (el) => {
+    const rec = hookedMuted.get(el);
+    if (!rec) return;
+    try { delete el.muted; } catch (_) {
+      try { Object.defineProperty(el, 'muted', rec.desc); } catch (__) {}
+    }
+    hookedMuted.delete(el);
+  };
+
+  const mutedObserver = new MutationObserver((muts) => {
+    for (const m of muts) {
+      const el = m.target;
+      if (!el || el.tagName !== 'VIDEO') continue;
+      if (el.hasAttribute('data-bv-target')) installMutedHook(el);
+      else removeMutedHook(el);
+    }
+  });
+  mutedObserver.observe(document.documentElement || document, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['data-bv-target']
+  });
 })();
