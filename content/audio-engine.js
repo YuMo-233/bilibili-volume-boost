@@ -62,8 +62,16 @@ class AudioEngine {
     this._tapLive = false;       // 可发声判定：抽头音轨当前确有声（live 且未 muted）
     this._hookReady = false;     // MAIN world 静音钩子是否已就绪（回传过初始意图）
     this._emitTap = false;       // 本图当前是否为唯一声源（决定增益是否放行）
-    this._watchdog = null;       // 周期兜底：校验抽头与元素真实静音
+    this._watchdog = null;       // 周期兜底：内容级校验抽头是否真的在出声
     this._retapTimer = null;     // 重抽退避重试
+
+    this._analyser = null;       // 抽头信号分析器（内容级可发声判定）
+    this._anBuf = null;
+    this._lastPeak = 0;          // 最近一次抽头峰值（诊断用）
+    this._tapProven = false;     // 抽头是否已被实测证明"确有声"（证明前绝不静音原元素）
+    this._noBoost = false;       // 抽头持续无声 → 降级原生发声，不再接管
+    this._silentSince = 0;       // 媒体在播但抽头连续无声的起点
+    this._recaptureCount = 0;    // 连续重抽次数
 
     // 抽头音轨事件（生命周期自愈）
     this._onTapMute = () => { this._tapLive = false; this._updateOutput(); };
@@ -130,6 +138,11 @@ class AudioEngine {
   /** 建增益链：Gain → DynamicsCompressor → destination（幂等，重抽时复用） */
   _buildChain() {
     if (!this.gainNode) this.gainNode = this.ctx.createGain();
+    if (!this._analyser) {
+      this._analyser = this.ctx.createAnalyser();
+      this._analyser.fftSize = 2048;
+      this._anBuf = new Float32Array(this._analyser.fftSize);
+    }
     if (!this.comp) {
       this.comp = this.ctx.createDynamicsCompressor();
       this.comp.threshold.value = -1;   // 约 -1dB 起限
@@ -158,8 +171,11 @@ class AudioEngine {
       this.stream = stream;
       this.source = this.ctx.createMediaStreamSource(stream);
       this.source.connect(this.gainNode);
+      if (this._analyser) this.source.connect(this._analyser);
       this._wireTap(track);
       this._tapLive = track.readyState === 'live' && !track.muted;
+      this._tapProven = false;   // 新抽头需重新实测证明有声后，才允许静音原元素
+      this._noBoost = false;
       return true;
     } catch (_) {
       try { if (stream) stream.getTracks().forEach((t) => t.stop()); } catch (__) {}
@@ -201,6 +217,7 @@ class AudioEngine {
     this.stream = null;
     this._unwireTap();
     this._tapLive = false;
+    this._tapProven = false;
     if (this._capture(v)) { this._updateOutput(); return; }
     this._updateOutput();       // 抽头暂不可用：立刻恢复原生发声
     this._scheduleRetap(0);
@@ -255,16 +272,66 @@ class AudioEngine {
     try { video.setAttribute('data-bv-target', this.nativeMuted ? '1' : '0'); } catch (_) {}
   }
 
-  /** 周期兜底：抽头断了就重抽；元素真实静音被绕过钩子改动时纠偏 */
+  /** 抽头原始信号峰值（0..1；即静音门槛之上是否有声）。无分析器返回 0 */
+  _tapPeak() {
+    if (!this._analyser || !this._anBuf) return 0;
+    try {
+      this._analyser.getFloatTimeDomainData(this._anBuf);
+      let m = 0;
+      for (let i = 0; i < this._anBuf.length; i++) {
+        const a = Math.abs(this._anBuf[i]);
+        if (a > m) m = a;
+      }
+      return m;
+    } catch (_) { return 0; }
+  }
+
+  /**
+   * 周期兜底（**内容级**可发声判定）：音轨 readyState/muted 会撒谎——Chrome 下抽头可能
+   * 明明"live 且未 muted"却输出静音（如 MSE 换源后旧节点不再跟随）。故用 AnalyserNode
+   * 直接测抽头信号，只有**实测确有声**才敢静音原元素：
+   *  - 有信号 → 置 _tapProven，解 _noBoost，放行接管；
+   *  - 媒体在播却连续无声 → 先重抽（≤3 次），仍无声则判定抽头不可用，置 _noBoost
+   *    降级为原生发声（只失去增益，绝不无声）；信号一旦回来立即恢复接管。
+   */
   _startWatchdog() {
     clearInterval(this._watchdog);
     this._watchdog = setInterval(() => {
       if (this._legacy || !this.video) return;
-      const t = this._tapTrack;
-      if (t && t.readyState === 'ended') { this._recapture(); return; }
-      this._tapLive = !!(t && t.readyState === 'live' && !t.muted);
+      const v = this.video;
+      const t0 = this._tapTrack;
+      if (t0 && t0.readyState === 'ended') { this._recapture(); return; }
+
+      const peak = this._tapPeak();
+      this._lastPeak = peak;
+      const running = !!(this.ctx && this.ctx.state === 'running');
+      const shouldSound = running && !v.paused && !v.ended && v.readyState >= 3 &&
+        !this.muted && !this.nativeMuted && this.nativeVolume > 0;
+
+      if (peak > AudioEngine.SILENCE_EPS) {
+        this._tapProven = true;
+        this._silentSince = 0;
+        this._recaptureCount = 0;
+        this._noBoost = false;   // 抽头确有信号 → 立即恢复接管
+      } else if (shouldSound) {
+        if (!this._silentSince) this._silentSince = Date.now();
+        if (Date.now() - this._silentSince > 2000) {
+          if (this._recaptureCount < 3) {
+            this._recaptureCount++;
+            this._silentSince = Date.now();
+            this._recapture();
+          } else {
+            this._noBoost = true;   // 重抽仍无声 → 判定抽头不可用，降级原生发声
+          }
+        }
+      } else {
+        this._silentSince = 0;
+      }
+
+      const cur = this._tapTrack;
+      this._tapLive = !!(cur && cur.readyState === 'live' && !cur.muted);
       this._updateOutput();
-    }, 1500);
+    }, 500);
   }
 
   /**
@@ -274,7 +341,8 @@ class AudioEngine {
    */
   _updateOutput() {
     const running = !!(this.ctx && this.ctx.state === 'running');
-    const tapUsable = !this._legacy && running && this._hookReady && this._tapLive;
+    const tapUsable = !this._legacy && running && this._hookReady && this._tapLive
+      && this._tapProven && !this._noBoost;
     const pluginMuted = !!this.muted;
 
     if (!this._legacy && this.video) {
@@ -327,6 +395,13 @@ class AudioEngine {
     this._hookReady = false;
     this._tapLive = false;
     this._emitTap = false;
+    this._analyser = null;
+    this._anBuf = null;
+    this._lastPeak = 0;
+    this._tapProven = false;
+    this._noBoost = false;
+    this._silentSince = 0;
+    this._recaptureCount = 0;
   }
 
   /**
@@ -360,6 +435,7 @@ class AudioEngine {
    * 感知刻度：100 → 幅值 1.0；300 → 6.24；500 → 14.62（等感知步进）。
    */
   // 常亮感知下限/上限（Loudness 百分比）：50-500，默认 100
+  static get SILENCE_EPS() { return 1e-4; } // 抽头"有信号"判定门槛（约 -80dBFS）
   static get PERC_MIN() { return 50; }   // 50% → 幅值 0.315（-10dB），用于压低过响素材
   static get PERC_MAX() { return 500; }  // 幅值 14.62x（+23.3dB）；实限于压缩器，见 getReduction()
 
@@ -424,6 +500,9 @@ class AudioEngine {
       hookReady: this._hookReady,
       tapLive: this._tapLive,
       emitTap: this._emitTap,
+      tapPeak: Math.round(this._lastPeak * 10000) / 10000,
+      tapProven: this._tapProven,
+      noBoost: this._noBoost,
       ctxState: this.ctx ? this.ctx.state : 'none',
       reduction: Math.round(this.getReduction() * 10) / 10
     };
