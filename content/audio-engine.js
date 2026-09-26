@@ -157,13 +157,19 @@ class AudioEngine {
 
     this._onVolumeChange = () => {
       self.nativeVolume = Number.isFinite(video.volume) ? video.volume : self.nativeVolume;
+      // 安全网：万一 MAIN world 钩子缺失，B 站取消静音会让原元素真的出声（双份声音），
+      // 这里在出声期间把真实静音重新压回 true；钩子在位时该真实值不会被 B 站改动，本句为惰性。
+      if (!self._legacy && self.ctx && self.ctx.state === 'running' && video.muted !== true) {
+        try { video.muted = true; } catch (_) {}
+      }
       self.apply();
     };
     video.addEventListener('volumechange', this._onVolumeChange);
 
     // 打标记属性即触发 MAIN world 安装 muted 钩子（见 sniff.js 的 MutationObserver）；
-    // 监听器已就绪，能收到回传的初始意图。
-    try { video.setAttribute('data-bv-target', '1'); } catch (_) {}
+    // 属性值携带"引擎在接管前捕获的 B 站真实静音意图"（'1'/'0'），作为钩子初始意图——
+    // 钩子绝不能去读元素当下的 muted，因为引擎随后就会把它强制置真。
+    try { video.setAttribute('data-bv-target', this.nativeMuted ? '1' : '0'); } catch (_) {}
   }
 
   /**
@@ -214,7 +220,9 @@ class AudioEngine {
 
   /** 设置感知音量百分比（50-500） */
   setBoost(percent) {
-    this.boost = Math.max(AudioEngine.PERC_MIN, Math.min(AudioEngine.PERC_MAX, Math.round(percent)));
+    const p = Math.round(Number(percent));
+    if (!Number.isFinite(p)) return; // 防坏记忆值把增益算成 NaN 而整路静音
+    this.boost = Math.max(AudioEngine.PERC_MIN, Math.min(AudioEngine.PERC_MAX, p));
     this.apply();
   }
 
@@ -243,8 +251,9 @@ class AudioEngine {
     const ratio = this.boost / 100;
     const boostF = Math.pow(ratio, 5 / 3); // L^0.6 的逆运算
     if (this._legacy) return boostF;
-    const nativeLayer = this.nativeMuted ? 0 : this.nativeVolume;
-    return boostF * nativeLayer;
+    const vol = Number.isFinite(this.nativeVolume) ? this.nativeVolume : 1;
+    const g = boostF * (this.nativeMuted ? 0 : vol);
+    return Number.isFinite(g) ? g : 1;
   }
 
   /** 平滑过渡到目标增益，避免爆音瞬态 */

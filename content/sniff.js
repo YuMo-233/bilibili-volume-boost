@@ -98,7 +98,9 @@
     if (!el || hookedMuted.has(el)) return;
     const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'muted');
     if (!desc || typeof desc.get !== 'function' || typeof desc.set !== 'function') return;
-    const rec = { desc, intent: !!desc.get.call(el) };
+    // 初始意图取自引擎写入的属性值（'1'/'0'），**绝不读元素当下的 muted**：引擎随后会把真实
+    // 静音强制置真，异步安装的钩子若读到被强制后的值，会把静音意图误判为真 → 增益归零 → 整页无声。
+    const rec = { desc, intent: el.getAttribute('data-bv-target') === '1' };
     try {
       Object.defineProperty(el, 'muted', {
         configurable: true,
