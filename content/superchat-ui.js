@@ -155,6 +155,12 @@ class SuperChatOverlay {
     let prevWrap = null;
     for (const it of top) {
       let rec = this._cards.get(it.id);
+      // 自愈：记录若不属于当前 wrap（旧宿主残留 / 已脱离文档），就地丢弃重建。
+      // 复用这类节点会带着失效的内联高度渲染，表现为两张卡片叠在一起。
+      if (rec && rec.wrap.parentElement !== this.wrap) {
+        this._cards.delete(it.id);
+        rec = null;
+      }
       if (!rec) {
         rec = this._buildItem(it);
         this._cards.set(it.id, rec);
