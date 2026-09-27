@@ -74,6 +74,12 @@ class SuperChatOverlay {
     }
     if (!slot) return false;
 
+    // 旧宿主随播放器重建脱离文档，其中的卡片节点不可再复用：若把残留记录
+    // 搬进新 wrap，会带着失效的内联高度（脱离期间 rAF/收尾都跳过赋高，留下
+    // 0px）渲染，表现为两张卡片叠在一起。故重建宿主时必须一并丢弃记录。
+    this._cards.clear();
+    this._moreEl = null;
+
     this.host = document.createElement('div');
     this.host.id = 'bv-sc-host';
     // all:initial 先置零，再声明自身样式（顺序不可颠倒）
@@ -264,12 +270,14 @@ class SuperChatOverlay {
 
     const h = this._naturalHeight(wrap);
     wrap.getBoundingClientRect();          // 强制回流，确立 0 起点
+    // 赋高与收尾都不做 isConnected 判断：宿主可能在动画期间脱离文档，
+    // 跳过就会把内联 height:0px 永久留下，节点日后被复用即两卡重叠。
     requestAnimationFrame(() => {
-      if (wrap.isConnected) wrap.style.height = `${h}px`;
+      wrap.style.height = `${h}px`;
     });
     setTimeout(() => {
       wrap.classList.remove('bv-enter', 'bv-anim');
-      if (wrap.isConnected) wrap.style.height = '';
+      wrap.style.height = '';
     }, SuperChatOverlay.ANIM_MS);
   }
 

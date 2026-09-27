@@ -198,7 +198,7 @@
       scOverlay = new SuperChatOverlay((id) => scFeed.close(id));
     }
     scOverlay.setPosition(scConfig.position);
-    if (!scOverlay.isMounted()) scOverlay.mount(); // 播放器重建后自动重挂
+    const remounted = !scOverlay.isMounted() && scOverlay.mount(); // 播放器重建后自动重挂
     // 接口只认真实房间号：换算完成前先不启动取数，避免用短号整轮报错
     const room = realRoomId();
     if (room) {
@@ -207,6 +207,9 @@
     }
     if (document.fullscreenElement) scOverlay.show();
     else scOverlay.hide();
+    // 重建后的新宿主是空的，用当前列表立即回填，否则最长要等一轮轮询（10 秒）
+    // 才有卡片；放在显隐之后，全屏下量到的是真实高度，入场动画不会塌成 0
+    if (remounted) scOverlay.render(scFeed.visible());
   }
 
   function scState() {
