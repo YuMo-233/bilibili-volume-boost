@@ -10,8 +10,21 @@
 (() => {
   'use strict';
 
+  /**
+   * 事件出口：异形直播间的静音钩子与 UP 识别跑在 blanc 嵌入帧的 MAIN world 内
+   * （all_frames 注入，见 docs/adr/0013），而监听方（引擎/主逻辑）在顶层窗口——
+   * 事件不跨文档，必须显式派发到顶层；跨源帧访问 top 会抛异常，退回本窗口派发。
+   */
+  const emit = (name, detail) => {
+    let target = window;
+    try { if (window.top && window.top !== window) target = window.top; } catch (_) {}
+    try { target.dispatchEvent(new CustomEvent(name, { detail })); } catch (_) {
+      try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch (__) {}
+    }
+  };
+
   const send = (detail) => {
-    window.dispatchEvent(new CustomEvent('bv_boost_up', { detail }));
+    emit('bv_boost_up', detail);
   };
 
   const isLive = () =>
@@ -108,12 +121,12 @@
         get() { return rec.intent; },
         set(v) {
           rec.intent = !!v;
-          window.dispatchEvent(new CustomEvent('bv_boost_muted', { detail: { muted: rec.intent } }));
+          emit('bv_boost_muted', { muted: rec.intent });
         }
       });
     } catch (_) { return; }
     hookedMuted.set(el, rec);
-    window.dispatchEvent(new CustomEvent('bv_boost_muted', { detail: { muted: rec.intent } }));
+    emit('bv_boost_muted', { muted: rec.intent });
   };
 
   const removeMutedHook = (el) => {

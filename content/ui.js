@@ -14,9 +14,14 @@
  *   _sync() / toast(text)
  */
 class BoostUI {
-  constructor(engine, onBoostChange) {
+  /**
+   * @param resolveDoc 活动文档解析器（见 docs/adr/0013）：异形直播间的播放器域位于
+   *                   blanc 嵌入帧内，查询/创建元素必须落到该帧文档。缺省顶层文档。
+   */
+  constructor(engine, onBoostChange, resolveDoc) {
     this.engine = engine;
     this.onBoostChange = onBoostChange; // (percent) => void
+    this._resolveDoc = typeof resolveDoc === 'function' ? resolveDoc : () => document;
     this.host = null;
     this.root = null;
     this.track = null;      // 竖直轨道容器
@@ -38,7 +43,7 @@ class BoostUI {
     this._peakAt = 0;        // 该峰值出现的时刻
   }
 
-  /** 控制栏注入点（回退序列） */
+  /** 控制栏注入点（回退序列；新版播放器选择器在前，旧版保留为后备） */
   static get SLOT_SELECTORS() {
     return {
       video: [
@@ -47,15 +52,25 @@ class BoostUI {
         '.bpx-player-control-bottom',
         '.bpx-player-container'
       ],
-      live: ['.web-player-controller-wrap .web-player-controller-right', '.web-player-controller-wrap', '.live-player-ctrl-wrap .right']
+      live: [
+        '.control-area .left-area',
+        '.web-player-controller-wrap .web-player-controller-right',
+        '.web-player-controller-wrap',
+        '.live-player-ctrl-wrap .right'
+      ]
     };
   }
 
-  /** B 站原生音量按钮（增益条插入其"旁边"） */
+  /** 原生音量按钮（增益条插入其"旁边"；新版播放器选择器在前，旧版保留为后备） */
   static get ANCHOR_SELECTORS() {
     return {
       video: ['.bpx-player-ctrl-volume'],
-      live: ['.web-player-icon-volume', '.webplayer-volume', '.web-player-controller-right [class*="Volume"], .web-player-controller-right [class*="volume"]']
+      live: [
+        '.control-area .volume',
+        '.web-player-icon-volume',
+        '.webplayer-volume',
+        '.web-player-controller-right [class*="Volume"], .web-player-controller-right [class*="volume"]'
+      ]
     };
   }
 
@@ -74,26 +89,36 @@ class BoostUI {
   /** 限幅读数的峰值保持时长（毫秒）：显示最近这段时间内的最大值，读数才读得出来 */
   static get LIMIT_HOLD_MS() { return 1000; }
 
+  /** 活动文档：优先解析器（帧更换后旧宿主会残留旧文档引用，不可作查询基准） */
+  _doc() {
+    try { const d = this._resolveDoc(); if (d) return d; } catch (_) {}
+    if (this.host && this.host.ownerDocument) return this.host.ownerDocument;
+    return document;
+  }
+
   findSlot(type) {
+    const doc = this._doc();
     const list = BoostUI.SLOT_SELECTORS[type] || [];
     for (const sel of list) {
-      const el = document.querySelector(sel);
+      const el = doc.querySelector(sel);
       if (el) return el;
     }
     return null;
   }
 
   findAnchor(type) {
+    const doc = this._doc();
     const list = BoostUI.ANCHOR_SELECTORS[type] || [];
     for (const sel of list) {
-      const el = document.querySelector(sel);
+      const el = doc.querySelector(sel);
       if (el) return el;
     }
     return null;
   }
 
+  /** 宿主有效性：已连接且归属活动文档（帧换文档后旧宿主归属失效，必须重建，见 docs/adr/0013） */
   isMounted() {
-    return this.host && this.host.isConnected;
+    return !!(this.host && this.host.isConnected && this.host.ownerDocument === this._doc());
   }
 
   /**
@@ -166,33 +191,46 @@ class BoostUI {
 
   mount(type) {
     if (this.isMounted()) return true;
+    const doc = this._doc();
     const slot = this.findSlot(type);
-    if (!slot) return false;
+    if (!slot) return false; // 控制栏尚未渲染（新版播放器：hover 挂载），等下次 observer 再试
 
-    this.host = document.createElement('div');
-    this.host.id = 'bv-boost-host';
-    this.host.style.cssText = 'all:initial;display:inline-flex;align-items:center;margin-left:2px;position:relative;user-select:none;-webkit-user-select:none;touch-action:none;pointer-events:none;';
-    this.root = this.host.attachShadow({ mode: 'closed' });
-    this.root.innerHTML = this._template();
-    this.track = this.root.querySelector('.bv-track');
-    this.panel = this.root.querySelector('.bv-panel');
-    this.fill = this.root.querySelector('.bv-fill');
-    this.thumb = this.root.querySelector('.bv-thumb');
-    this.valEl = this.root.querySelector('.bv-val');
-    this.toastEl = this.root.querySelector('.bv-toast');
+    // 帧换文档（异形房切房重载）时旧宿主归属已失效，作废重建
+    if (this.host && this.host.ownerDocument !== doc) this.unmount();
 
-    this._bindTrack();
+    // 新版播放器控制栏 hover 挂载/卸载会连带宿主进出文档；宿主只建一次，重插复用，
+    // 避免每轮 hover 重放模板与事件绑定（就绪闩锁 _revealed 也因此保留）
+    if (!this.host) {
+      this.host = doc.createElement('div');
+      this.host.id = 'bv-boost-host';
+      this.host.style.cssText = 'all:initial;display:inline-flex;align-items:center;margin-left:2px;position:relative;user-select:none;-webkit-user-select:none;touch-action:none;pointer-events:none;';
+      this.root = this.host.attachShadow({ mode: 'closed' });
+      this.root.innerHTML = this._template();
+      this.track = this.root.querySelector('.bv-track');
+      this.panel = this.root.querySelector('.bv-panel');
+      this.fill = this.root.querySelector('.bv-fill');
+      this.thumb = this.root.querySelector('.bv-thumb');
+      this.valEl = this.root.querySelector('.bv-val');
+      this.toastEl = this.root.querySelector('.bv-toast');
 
-    // 刻度点击直达（500%→50% 十档，每档 50%，等感知等距）
-    this.root.querySelectorAll('.bv-scale span').forEach((sp) => {
-      sp.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const val = parseInt(sp.textContent, 10);
-        if (!Number.isNaN(val)) this.onBoostChange(val);
+      this._bindTrack();
+
+      // 刻度点击直达（500%→50% 十档，每档 50%，等感知等距）
+      this.root.querySelectorAll('.bv-scale span').forEach((sp) => {
+        sp.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const val = parseInt(sp.textContent, 10);
+          if (!Number.isNaN(val)) this.onBoostChange(val);
+        });
       });
-    });
 
-    // 插入到 B 站音量按钮旁（其后），否则先追加到控制栏容器末尾，等锚点出现再挪
+      this._since = Date.now();
+    }
+
+    // 拖动期间控制栏若被卸载会留下悬停残留（浏览器不补发 mouseleave），重插前清一次
+    this._clearHover();
+
+    // 插入到锚点旁（新版播放器音量键右侧），否则先放进槽位，等锚点出现再挪
     const anchor = this.findAnchor(type);
     if (anchor && anchor.parentNode) {
       anchor.parentNode.insertBefore(this.host, anchor.nextSibling);
@@ -201,9 +239,7 @@ class BoostUI {
     }
 
     this.type = type;
-    this._since = Date.now();
     this._applyVisibility(); // 控件就绪前保持隐藏且不可交互（见 docs/adr/0006）
-
     this._sync();
     return true;
   }
@@ -218,8 +254,9 @@ class BoostUI {
    * 所以它就是面板必须待在其中的边界。与具体播放器结构、选择器无关。
    */
   findClipper() {
+    const doc = (this.host && this.host.ownerDocument) || this._doc();
     let el = this.host ? this.host.parentElement : null;
-    while (el && el !== document.body && el !== document.documentElement) {
+    while (el && el !== doc.body && el !== doc.documentElement) {
       if (getComputedStyle(el).overflowX !== 'visible') return el;
       el = el.parentElement;
     }

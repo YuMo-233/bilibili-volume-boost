@@ -44,8 +44,9 @@ class SuperChatOverlay {
     return 260;
   }
 
-  constructor(onClose) {
+  constructor(onClose, resolveDoc) {
     this.onClose = onClose || (() => {});
+    this._resolveDoc = typeof resolveDoc === 'function' ? resolveDoc : () => document;
     this.host = null;
     this.root = null;
     this.wrap = null;
@@ -57,8 +58,16 @@ class SuperChatOverlay {
     this._lastSweep = 0;
   }
 
+  /** 活动文档：优先解析器（帧更换后旧宿主会残留旧文档引用，不可作查询基准） */
+  _doc() {
+    try { const d = this._resolveDoc(); if (d) return d; } catch (_) {}
+    if (this.root && this.root.ownerDocument) return this.root.ownerDocument;
+    return document;
+  }
+
+  /** 宿主有效性：已连接且归属活动文档（帧换文档后旧宿主归属失效，必须重建） */
   isMounted() {
-    return !!(this.host && this.host.isConnected);
+    return !!(this.host && this.host.isConnected && this.host.ownerDocument === this._doc());
   }
 
   isShowing() {
@@ -67,9 +76,10 @@ class SuperChatOverlay {
 
   mount() {
     if (this.isMounted()) return true;
+    const doc = this._doc();
     let slot = null;
     for (const sel of SuperChatOverlay.SLOT_SELECTORS) {
-      slot = document.querySelector(sel);
+      slot = doc.querySelector(sel);
       if (slot) break;
     }
     if (!slot) return false;
@@ -80,7 +90,8 @@ class SuperChatOverlay {
     this._cards.clear();
     this._moreEl = null;
 
-    this.host = document.createElement('div');
+    if (this.host) this.host.remove();   // 帧换文档：旧宿主已失效，先从旧树摘除
+    this.host = doc.createElement('div');
     this.host.id = 'bv-sc-host';
     // all:initial 先置零，再声明自身样式（顺序不可颠倒）
     this.host.style.cssText =
@@ -177,38 +188,39 @@ class SuperChatOverlay {
     this._tick();
   }
 
-  /** 创建卡片（含承载它的可折叠外层） */
+  /** 创建卡片（含承载它的可折叠外层）；元素一律建于 wrap 所属文档（活动文档） */
   _buildItem(it) {
-    const wrap = document.createElement('div');
+    const doc = this.wrap.ownerDocument;
+    const wrap = doc.createElement('div');
     wrap.className = 'bv-sc-item';
 
-    const card = document.createElement('div');
+    const card = doc.createElement('div');
     card.className = 'bv-sc-card';
     card.style.background = this._cardBg(it);
     if (it.fontColor) card.style.color = it.fontColor;
 
-    const hd = document.createElement('div');
+    const hd = doc.createElement('div');
     hd.className = 'bv-sc-hd';
 
-    const face = document.createElement('img');
+    const face = doc.createElement('img');
     face.className = 'bv-sc-face';
     face.alt = '';
     if (it.face) face.src = it.face;
     hd.appendChild(face);
 
-    const name = document.createElement('span');
+    const name = doc.createElement('span');
     name.className = 'bv-sc-name';
     name.textContent = it.uname || '匿名';
     name.title = it.uname || '';
     hd.appendChild(name);
 
-    const price = document.createElement('span');
+    const price = doc.createElement('span');
     price.className = 'bv-sc-price';
     price.textContent = `¥${it.price}`;
     if (it.bgPriceColor) price.style.background = it.bgPriceColor;
     hd.appendChild(price);
 
-    const cls = document.createElement('button');
+    const cls = doc.createElement('button');
     cls.className = 'bv-sc-cls';
     cls.type = 'button';
     cls.title = '关闭本条醒目留言';
@@ -222,14 +234,14 @@ class SuperChatOverlay {
 
     card.appendChild(hd);
 
-    const msg = document.createElement('div');
+    const msg = doc.createElement('div');
     msg.className = 'bv-sc-msg';
     msg.textContent = it.message || '';   // textContent 防注入
     card.appendChild(msg);
 
-    const bar = document.createElement('div');
+    const bar = doc.createElement('div');
     bar.className = 'bv-sc-bar';
-    const fill = document.createElement('i');
+    const fill = doc.createElement('i');
     fill.style.transform = 'scaleX(0)';
     bar.appendChild(fill);
     card.appendChild(bar);
@@ -312,7 +324,7 @@ class SuperChatOverlay {
   _renderMore(n) {
     if (n > 0) {
       if (!this._moreEl) {
-        this._moreEl = document.createElement('div');
+        this._moreEl = this.wrap.ownerDocument.createElement('div');
         this._moreEl.className = 'bv-sc-more';
         this.wrap.appendChild(this._moreEl);
       }

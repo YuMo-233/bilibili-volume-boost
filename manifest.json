@@ -26,6 +26,7 @@
       "matches": ["https://www.bilibili.com/video/*", "https://live.bilibili.com/*"],
       "js": ["content/sniff.js"],
       "world": "MAIN",
+      "all_frames": true,
       "run_at": "document_start"
     },
     {

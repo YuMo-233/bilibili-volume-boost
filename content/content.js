@@ -28,6 +28,32 @@
   /** 搜索页只跑「不感兴趣」卡片入口，不介入播放器与音量 UI */
   const SEARCH_ONLY = location.hostname === 'search.bilibili.com';
 
+  // ---- 活动文档（异形直播间：播放器域在 blanc 嵌入帧内，见 docs/adr/0013） ----
+  // 部分直播间（活动/特殊模板）整个直播间的 DOM 嵌在同源 iframe 内
+  // （live.bilibili.com/blanc/{真实房间号}?liteVersion=true，外层 .live-non-revenue-player），
+  // 顶层文档只是空壳：video、控制栏、SC 注入点全在帧内。插件的播放器域查询与
+  // 文档级监听必须落到该帧文档上，否则在该类房间完全失效。
+  let embedFrame = null;   // 嵌入播放器帧（iframe 元素）
+  let embedDoc = null;     // 其文档（仅用于挂钩变更检测；查询走 actDoc 实时解析）
+
+  function findEmbedFrame() {
+    return document.querySelector('iframe[src*="/blanc/"]') || null;
+  }
+
+  /** 活动文档：嵌入帧可用时为帧文档，否则顶层文档 */
+  function actDoc() {
+    if (current.type === 'live') {
+      const f = findEmbedFrame();
+      if (f) {
+        try {
+          const d = f.contentDocument;
+          if (d && d.body) return d;
+        } catch (_) {}   // 跨源/未就绪：退回顶层，等下一轮
+      }
+    }
+    return document;
+  }
+
   // ---- UP 主识别 ----
   const VIDEO_SELECTORS = '#bilibili-player video, .bpx-player-video video, .bilibili-player-video video, video';
   const hasUpEvent = { video: false, live: false };
@@ -45,21 +71,24 @@
     if (changed) applyMemoryGain(); // 切到新 UP 主时套用其记忆
   }
 
-  /** DOM 兜底解析 mid（MAIN world 事件未送达时） */
+  /** DOM 兜底解析 mid（MAIN world 事件未送达时；异形房查嵌入帧内文档） */
   function domSniff() {
     if (hasUpEvent[current.type] && current.mid) return;
     try {
+      const doc = actDoc();
       if (current.type === 'video') {
-        const a = document.querySelector('.up-info-container a[href*="space.bilibili.com"], a[href*="space.bilibili.com"][title]');
+        const a = doc.querySelector('.up-info-container a[href*="space.bilibili.com"], a[href*="space.bilibili.com"][title]');
         const m = a && a.href.match(/space\.bilibili\.com\/(\d+)/);
         if (m) setCurrent(m[1], 'video', (a && a.getAttribute('title')) || '');
       } else {
         // 新版直播页无 space 链接（实测），room-owner-username 亦无 uid；
-        // DOM 兜底退化为"房间号键"（同一房间长期对应同一主播，保证记忆稳定）
-        const a = document.querySelector('.anchor-info a[href*="space.bilibili.com"], a[href*="space.bilibili.com"]');
+        // DOM 兜底退化为"房间号键"（同一房间长期对应同一主播，保证记忆稳定）。
+        // 房间号取顶层地址栏：异形房嵌入帧 URL 是 blanc/{真实号}，与既有记忆键
+        // 不同源，保持顶层路径可避免该类房间的记忆键漂移。
+        const a = doc.querySelector('.anchor-info a[href*="space.bilibili.com"], a[href*="space.bilibili.com"]');
         const m = a && a.href.match(/space\.bilibili\.com\/(\d+)/);
         const m2 = location.pathname.match(/^\/(\d+)/);
-        const nameEl = document.querySelector('.room-owner-username');
+        const nameEl = doc.querySelector('.room-owner-username');
         const name = nameEl ? nameEl.textContent.trim() : '';
         if (m) setCurrent(m[1], 'live', name || (a && a.getAttribute('title')) || '');
         else if (m2) setCurrent('room:' + m2[1], 'live', name);
@@ -115,7 +144,7 @@
         engine.setBoost(p);
         ui._sync();
         persistBoost();
-      });
+      }, actDoc);
       if (!ui.mount(current.type)) return; // 控制栏尚未渲染，等下次 observer 再试
     }
     // 音量按钮出现后把增益条挪到它"旁边"（播放器初始化时序兜底）
@@ -195,7 +224,7 @@
       });
     }
     if (!scOverlay) {
-      scOverlay = new SuperChatOverlay((id) => scFeed.close(id));
+      scOverlay = new SuperChatOverlay((id) => scFeed.close(id), actDoc);
     }
     scOverlay.setPosition(scConfig.position);
     const remounted = !scOverlay.isMounted() && scOverlay.mount(); // 播放器重建后自动重挂
@@ -253,7 +282,8 @@
     const sel = current.type === 'video'
       ? '#bilibili-player video, .bpx-player-video video, .bilibili-player-video video'
       : '.web-player-video-container video, .live-player-video video, .player-container video, video';
-    return document.querySelector(sel);
+    // 异形房：video 在嵌入帧内；跨文档取到后引擎照常按元素挂载（同源，见 docs/adr/0013）
+    return actDoc().querySelector(sel);
   }
 
   let lastVideo = null;
@@ -285,10 +315,75 @@
   }
 
   function onDomChange() {
+    ensureEmbedHooks();
     domSniff();
     bindVideo();
     ensureUI();
     syncDislike();
+  }
+
+  // ---- 嵌入帧挂钩（观察者与文档级监听的迁移，见 docs/adr/0013） ----
+  let moRef = null;   // 主 MutationObserver（init 中创建，帧更换时重挂目标）
+
+  const onResumeGesture = () => engine.resumeOnUserGesture();
+  /** 进出沉浸全屏 → 醒目留言浮层显隐（只监听，不介入全屏逻辑，见 docs/adr/0003） */
+  const onFsChange = () => {
+    syncSC();
+    // B 站进出全屏会重建播放器容器，延时补挂一次
+    setTimeout(() => syncSC(), 500);
+  };
+  /** 嵌入帧内导航/重载：重挂钩并立即全链路刷新一次 */
+  const onEmbedLoad = () => {
+    ensureEmbedHooks();
+    domSniff();
+    bindVideo();
+    ensureUI();
+    syncSC();
+    syncDislike();
+  };
+
+  /**
+   * 嵌入帧出现/更换（含帧内切房重载）时迁移观察者与文档级监听。
+   * MutationObserver 不能跨文档继承：旧帧文档的观察与监听在新文档上全部失效，
+   * 必须显式重挂；宿主有效性由 isMounted 的「归属文档一致」判定兜住，
+   * 下一轮 ensureUI/syncSC 会自动在新文档重建。
+   */
+  function ensureEmbedHooks() {
+    const f = current.type === 'live' ? findEmbedFrame() : null;
+    let d = null;
+    if (f) {
+      try { d = (f.contentDocument && f.contentDocument.body) ? f.contentDocument : null; } catch (_) {}
+    }
+    if (f === embedFrame && d === embedDoc) return;
+
+    if (embedDoc) {
+      try { embedDoc.removeEventListener('keydown', onKeyDown, true); } catch (_) {}
+      try { embedDoc.removeEventListener('pointerdown', onResumeGesture, true); } catch (_) {}
+      try { embedDoc.removeEventListener('fullscreenchange', onFsChange, true); } catch (_) {}
+    }
+    if (embedFrame) {
+      try { embedFrame.removeEventListener('load', onEmbedLoad, true); } catch (_) {}
+    }
+
+    embedFrame = f;
+    embedDoc = d;
+
+    if (embedFrame) {
+      try { embedFrame.addEventListener('load', onEmbedLoad, true); } catch (_) {}
+    }
+    if (embedDoc) {
+      embedDoc.addEventListener('keydown', onKeyDown, true);          // 帧内焦点下的快捷键
+      embedDoc.addEventListener('pointerdown', onResumeGesture, true); // 帧内手势恢复 AudioContext
+      embedDoc.addEventListener('fullscreenchange', onFsChange, true);
+    }
+
+    if (moRef) {
+      moRef.disconnect();
+      moRef.observe(document.documentElement, { childList: true, subtree: true });
+      if (embedDoc) {
+        try { moRef.observe(embedDoc.documentElement || embedDoc, { childList: true, subtree: true }); } catch (_) {}
+      }
+    }
   }
 
   // ---- 快捷键 ----
@@ -371,20 +466,17 @@
     } catch (_) {}
 
     window.addEventListener('bv_boost_up', onSniffEvent, false);
-    document.addEventListener('pointerdown', () => engine.resumeOnUserGesture(), true);
+    document.addEventListener('pointerdown', onResumeGesture, true);
     window.addEventListener('keydown', onKeyDown, true);
     // 进出沉浸全屏 → 醒目留言浮层显隐（只监听，不介入全屏逻辑，见 docs/adr/0003）
-    document.addEventListener('fullscreenchange', () => {
-      syncSC();
-      // B 站进出全屏会重建播放器容器，延时补挂一次
-      setTimeout(() => syncSC(), 500);
-    }, true);
+    document.addEventListener('fullscreenchange', onFsChange, true);
 
     // 侦听 video 元素重建与 DOM 变化（B 站切清晰度/切流会替换 video）
-    const mo = new MutationObserver(() => onDomChange());
-    mo.observe(document.documentElement, { childList: true, subtree: true });
+    moRef = new MutationObserver(() => onDomChange());
+    moRef.observe(document.documentElement, { childList: true, subtree: true });
 
-    // 首次绑定（video 已存在时）
+    // 首次绑定（先挂异形房嵌入帧的观察者/监听，再走全链路）
+    ensureEmbedHooks();
     domSniff();
     bindVideo();
     ensureUI();
@@ -444,6 +536,7 @@
 
     // 周期性兜底：SPA 内切换视频（URL/bvid 变化）时重新识别；引擎/主播就绪后补应用记忆
     setInterval(() => {
+      ensureEmbedHooks();
       domSniff();
       bindVideo();
       ensureUI();
