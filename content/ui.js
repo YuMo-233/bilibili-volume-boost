@@ -137,6 +137,7 @@ class BoostUI {
         anchor.parentNode.insertBefore(this.host, anchor.nextSibling);
         this._clearHover();      // 位置变更 → 清悬停残留
         this._anchorSig = null;  // 位置已变，稳定性需重新采样
+        this._fitNativeBox(anchor);
       }
       this._updateReadiness(anchor);
     } else if (!this._revealed && Date.now() - this._since >= BoostUI.FALLBACK_MS) {
@@ -144,6 +145,19 @@ class BoostUI {
     }
 
     this._applyVisibility();
+  }
+
+  /**
+   * 视频页控制栏纵向对齐：原生按钮是「确定高度 + 顶部对齐」（flex 拉伸规则下等价 flex-start），
+   * 宿主默认 auto 高度会被同行的 flex 拉伸到整行高（实测 35px vs 原生 22px），内部按钮盒
+   * 随之整体下沉数像素。复刻原生高度即可同顶对齐。仅视频页需要：直播页原生为居中排布，
+   * 宿主 auto 高度恰好正确（见 docs/adr/0014）。
+   */
+  _fitNativeBox(anchor) {
+    if (this.type !== 'video' || !this.host || !anchor) return;
+    let h = 0;
+    try { h = parseInt(getComputedStyle(anchor).height, 10); } catch (_) {}
+    if (h > 0 && this.host.style.height !== `${h}px`) this.host.style.height = `${h}px`;
   }
 
   /** 就绪判定：锚点可见且位置连续两次采样一致 → 放行（一次性闩锁，不再回退） */
@@ -215,6 +229,9 @@ class BoostUI {
 
       this._bindTrack();
 
+      // 视频页控制栏：按钮/图标尺寸向原生 22px 按钮格对齐（直播页保持原观感）
+      if (type === 'video') this.host.classList.add('bv-video');
+
       // 刻度点击直达（500%→50% 十档，每档 50%，等感知等距）
       this.root.querySelectorAll('.bv-scale span').forEach((sp) => {
         sp.addEventListener('click', (e) => {
@@ -237,6 +254,7 @@ class BoostUI {
     } else {
       slot.appendChild(this.host);
     }
+    this._fitNativeBox(anchor);
 
     this.type = type;
     this._applyVisibility(); // 控件就绪前保持隐藏且不可交互（见 docs/adr/0006）
@@ -485,6 +503,9 @@ class BoostUI {
     color: #fff; cursor: pointer; line-height: 0;
   }
   .bv-btn svg { width: 17px; height: 17px; display: block; }
+  /* 视频页控制栏：图标对齐原生 22px 按钮格的视觉尺寸（原生图标充满格高） */
+  :host(.bv-video) .bv-btn { width: 22px; height: 22px; }
+  :host(.bv-video) .bv-btn svg { width: 22px; height: 22px; }
   /* hover 展开的竖直增益面板 */
   .bv-panel {
     display: none; position: absolute; bottom: calc(100% - 2px); left: 50%;
