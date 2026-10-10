@@ -23,14 +23,14 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.bilibili.com/video/*", "https://live.bilibili.com/*"],
+      "matches": ["https://www.bilibili.com/video/*", "https://www.bilibili.com/list/*", "https://live.bilibili.com/*"],
       "js": ["content/sniff.js"],
       "world": "MAIN",
       "all_frames": true,
       "run_at": "document_start"
     },
     {
-      "matches": ["https://www.bilibili.com/video/*", "https://live.bilibili.com/*", "https://search.bilibili.com/*"],
+      "matches": ["https://www.bilibili.com/video/*", "https://www.bilibili.com/list/*", "https://live.bilibili.com/*", "https://search.bilibili.com/*"],
       "js": ["content/audio-engine.js", "content/memory.js", "content/ui.js", "content/superchat.js", "content/superchat-ui.js", "content/dislike-ui.js", "content/dislike.js", "content/content.js"],
       "run_at": "document_idle"
     }
