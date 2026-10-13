@@ -70,7 +70,12 @@
   function setCurrent(mid, type, name) {
     const changed = current.mid !== mid || current.type !== type;
     current = { mid: String(mid), type, name: name || current.name };
-    if (changed) applyMemoryGain(); // 切到新 UP 主时套用其记忆
+    if (changed) {
+      applyMemoryGain(); // 切到新 UP 主时套用其记忆
+      // UP 主识别就绪 → 立刻解除屏蔽开关的"未就绪"置灰（见 docs/adr/0017）。
+      // 少了这一步就得等下一轮 refresh（DOM 变更或 2 秒 tick）才亮起来。
+      syncDislike();
+    }
   }
 
   /** DOM 兜底解析 mid（MAIN world 事件未送达时；异形房查嵌入帧内文档） */
@@ -253,7 +258,9 @@
   }
 
   // ---- 相关推荐「不感兴趣」（仅视频详情页，见 docs/adr/0008） ----
-  const dislike = new BoostDislike();
+  // UP 主识别结果以只读方式注入：屏蔽开关坚持以识别结果为准，不再自己从 DOM 现取 mid
+  // （SPA 换页瞬间两者会短暂不一致，见 docs/adr/0017）
+  const dislike = new BoostDislike(() => current);
 
   /**
    * 屏蔽清单的第一轮读盘在这里兜住：start() 内部会 `ensure()` 并在完成后补一次 refresh，
@@ -282,7 +289,9 @@
       blockedVideos: st.videos,   // 清单里的视频级屏蔽条数
       blockedUps: st.ups,         // 清单里的 UP 主级屏蔽条数
       hide: DislikeStore.hide,    // 是否开启「彻底隐藏」
-      toggle: !!(dislike._toggle && dislike._toggle.isMounted())
+      toggle: !!(dislike._toggle && dislike._toggle.isMounted()),
+      toggleReady: !!(dislike._toggle && dislike._toggle.isMounted() && dislike._toggle._ready),
+      upReady: !!current.mid      // 当前 UP 主是否已识别就绪
     };
   }
 

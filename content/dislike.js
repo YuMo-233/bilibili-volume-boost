@@ -82,11 +82,15 @@ class BoostDislike {
     return 4;
   }
 
-  constructor() {
+  constructor(upProvider) {
     this._cards = new Map();    // card 元素 -> { ui, info, blocked }（blocked = 命中的 reason_id 或 null）
     this._running = false;
-    this._toggle = null;        // 当前视频的开关控件
+    this._toggle = null;        // 当前视频的 UP 主屏蔽开关
     this._raf = null;
+    // 当前 UP 主的**唯一真值来源**（由 content.js 注入，返回其已识别就绪的 { mid, type, name }）。
+    // 绝不再从 DOM 现取 mid：SPA 换页瞬间地址栏已变、DOM 里还是上一条视频的 UP 主链接，
+    // 两者拼起来会得出"新视频 + 旧作者"这种不存在的身份（见 docs/adr/0017）。
+    this._up = typeof upProvider === 'function' ? upProvider : null;
     this._onViewport = () => this.scheduleReposition();
   }
 
@@ -223,12 +227,18 @@ class BoostDislike {
   }
 
   /**
-   * 当前视频的开关控件（模仿点赞项，插在点赞与投币之间）。
-   * 拿不到本页视频身份（非详情页 / 无 UP 主链接）时不显示。
+   * 当前视频的 UP 主屏蔽开关（模仿点赞项，插在点赞与投币之间）。
+   *
+   * **UP 主级**语义（见 docs/adr/0017）：同一位 UP 主的每条视频呈同一状态，换页不重置
+   * 是该语义的正确表现，不是状态残留。故回显判定只看"该 UP 主在不在屏蔽清单里"。
+   *
+   * 三种状态：
+   * - 非详情页（拿不到 bvid）→ 整个撤下
+   * - 详情页但 UP 主尚未识别就绪 → **保持可见、置灰不可点**（不做动画式闪烁，也不亮错状态）
+   * - 识别就绪 → 按清单回显激活态并可点
    */
   _syncToggle() {
-    const info = this._currentVideo();
-    if (!info) {
+    if (!this._currentBvid()) {
       if (this._toggle) {
         this._toggle.unmount();
         this._toggle = null;
@@ -242,24 +252,33 @@ class BoostDislike {
       this._toggle = null; // 操作栏未就绪，等下一轮
       return;
     }
-    // 开关回显屏蔽清单：该 UP 主已在清单里时进页面即呈激活态（见 docs/adr/0016）
-    this._toggle.setOn(DislikeStore.isUpBlocked(info.upMid));
+    const info = this._currentVideo();
+    this._toggle.setReady(!!info);
+    if (info) this._toggle.setOn(DislikeStore.isUpBlocked(info.upMid));
   }
 
-  /** 本页正在播放的视频身份（bvid 取自 URL，UP 主 mid 取自页面链接） */
-  _currentVideo() {
+  /** 本页视频的 bvid（取自 URL，永不滞后）；非详情页返回 null */
+  _currentBvid() {
     const m = location.pathname.match(/\/video\/(BV[0-9A-Za-z]{10})/);
-    if (!m) return null;
-    const a = document.querySelector('.up-info-container a[href*="space.bilibili.com"], a[href*="space.bilibili.com"][title]');
-    const mid = a ? (a.getAttribute('href').match(/space\.bilibili\.com\/(\d+)/) || [])[1] : null;
-    if (!mid) return null;
-    return { bvid: m[1], aid: BoostDislike.bv2av(m[1]), upMid: mid, upName: '' };
+    return m ? m[1] : null;
   }
 
-  /** 开关动作：开 = 上报「不想看此UP主」，关 = 撤销 */
+  /**
+   * 本页视频身份（bvid 取自 URL + UP 主取自**已识别就绪**的结果）。
+   * UP 主未识别出时返回 null——调用方据此判定"未就绪"，绝不退回 DOM 现取。
+   */
+  _currentVideo() {
+    const bvid = this._currentBvid();
+    if (!bvid) return null;
+    const up = this._up ? this._up() : null;
+    if (!up || !up.mid || up.type !== 'video') return null;
+    return { bvid, aid: BoostDislike.bv2av(bvid), upMid: String(up.mid), upName: up.name || '' };
+  }
+
+  /** 开关动作：开 = 上报「不想看此UP主」，关 = 撤销。UP 主未就绪时直接拒绝（控件也已置灰） */
   async _toggleReport(on) {
     const info = this._currentVideo();
-    if (!info) return false;
+    if (!info) return { ok: false, remote: false };
     return on ? this._report(info, BoostDislike.REASON_UP) : this._cancel(info, BoostDislike.REASON_UP);
   }
 
@@ -306,21 +325,24 @@ class BoostDislike {
 
   /**
    * 上报（reasonId：1=这个内容，4=UP主）。
-   * 上报成功才记入**屏蔽清单**——清单才是"刷新/换页后仍不再打扰"的依据（见 docs/adr/0016）。
-   * 顺序不能颠倒：先拿到服务端确认再落本地，避免上报失败却留下本地屏蔽。
+   * 返回 `{ ok, remote }`：`remote` = 服务端是否确认；`ok` = 本地屏蔽是否已生效。
+   * 上报与本地屏蔽**绑在一起**——没拿到服务端确认就不落清单，避免"上报失败却留下本地屏蔽"。
+   * （与 `_cancel` 相反：那边以本地为准，见 docs/adr/0017）
    */
   async _report(info, reasonId) {
-    // 「不想看此UP主」必须带 UP 主 mid；DOM 取不到时才补取一次
+    // 「不想看此UP主」必须带 UP 主 mid；DOM 取不到时才补取一次（卡片路径的兜底）
     if (reasonId === BoostDislike.REASON_UP && !info.upMid && !(await this._fillUp(info))) {
-      return false;
+      return { ok: false, remote: false };
     }
-    if (!(await this._post(BoostDislike.REPORT_URL, info, reasonId))) return false;
+    if (!(await this._post(BoostDislike.REPORT_URL, info, reasonId))) {
+      return { ok: false, remote: false };
+    }
 
     await DislikeStore.blockVideo(info.bvid, reasonId);
     if (reasonId === BoostDislike.REASON_UP && info.upMid) {
       await DislikeStore.blockUp(info.upMid, info.upName);
     }
-    return true;
+    return { ok: true, remote: true };
   }
 
   /** 补取 UP 主 mid（`view` 接口免 WBI，同时带回精确 aid） */
@@ -341,19 +363,41 @@ class BoostDislike {
   }
 
   /**
-   * 撤销上报（reasonId 需与上报时一致）。
-   * 撤销成功才解除本地屏蔽：UP 主级撤销同时撤下该 UP 主的整条屏蔽记录，
-   * 这样该 UP 主的其它卡片也会一并恢复（它们此前是靠 mid 命中清单的）。
+   * 撤销上报。返回 `{ ok, remote }`。
+   *
+   * **本地优先**（见 docs/adr/0017）：本地屏蔽清单是插件的呈现决策，必须始终可逆，
+   * 故远端 `/dislike/cancel` 仅作**最佳努力**——成败都解除本地屏蔽，只把服务端是否
+   * 接受如实回报给 UI（`remote`），由 UI 提示「已解除本地屏蔽，B站端撤销未成功」。
+   *
+   * 为什么不先等远端：B站对「不感兴趣」的取消没有公开的时效阈值，但**任何**远端拒绝
+   * （记录过旧、reason_id 或 mid 对不上、接口变更）都会让我们这一侧永远关不掉开关，
+   * 只能靠 popup 清空——把本地状态的可逆性绑死在一次网络请求上是不该有的耦合。
+   *
+   * UP 主级撤销同时撤下该 UP 主的整条记录，其其它卡片随之恢复（它们靠 mid 命中清单）。
    */
   async _cancel(info, reasonId) {
     const rid = reasonId || 1;
-    if (!(await this._post(BoostDislike.CANCEL_URL, info, rid))) return false;
 
-    await DislikeStore.unblockVideo(info.bvid);
-    if (rid === BoostDislike.REASON_UP && info.upMid) {
-      await DislikeStore.unblockUp(info.upMid);
+    // 远端只是信号通道，**不得**成为本地解除的前置条件：连"请求本身抛错"都要兜住，
+    // 否则用户照样关不掉开关（见 docs/adr/0017）
+    let remote = false;
+    try {
+      remote = await this._post(BoostDislike.CANCEL_URL, info, rid);
+    } catch (_) {
+      remote = false;
     }
-    return true;
+
+    // ok 如实反映"本地是否真的解除了"，不拿远端的成败冒充
+    let local = true;
+    try {
+      await DislikeStore.unblockVideo(info.bvid);
+      if (rid === BoostDislike.REASON_UP && info.upMid) {
+        await DislikeStore.unblockUp(info.upMid);
+      }
+    } catch (_) {
+      local = false;
+    }
+    return { ok: local, remote: !!remote };
   }
 
   /**
@@ -381,8 +425,10 @@ class BoostDislike {
     };
     if (info.upMid) params.mid = String(info.upMid);   // UP 主未知时不带该字段
     if (info.trackId) params.track_id = String(info.trackId);
-    const body = new URLSearchParams(params);
     try {
+      // 组装与请求都放在 try 内：`_post` 承诺"只返回布尔、绝不抛出"，
+      // 调用方（尤其 _cancel 的本地优先路径）才敢只做一次 await
+      const body = new URLSearchParams(params);
       const res = await fetch(url, {
         method: 'POST',
         credentials: 'include',

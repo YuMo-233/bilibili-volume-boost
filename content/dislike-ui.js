@@ -19,7 +19,12 @@
  * 公共接口（dislike.js 依赖）：
  *   new DislikeCardUI(card, info, { onReport, onCancel })
  *   mount() / unmount() / isMounted() / reposition()
- *   markReported(reasonId) / clearReported() / toast(text)
+ *   markReported(reasonId) / clearReported() / reportedReason() / setCardHidden(bool) / toast(text)
+ *
+ * onReport / onCancel 均返回 Promise<{ ok, remote }>：
+ *   ok     = 本地状态是否已变更（成立才切换 UI）
+ *   remote = 服务端是否接受。撤销侧两者可以不一致——远端没接受本地也会解除，
+ *            此时必须如实提示用户（见 docs/adr/0017）。
  */
 
 /** 几何稳定判定所需静止时长（与 docs/adr/0006 的控件就绪判定同一思路） */
@@ -399,8 +404,8 @@ class DislikeCardUI {
         const reasonId = Number(el.dataset.reason);
         if (this._reported !== null) return;
         this._menu.classList.remove('bv-show');
-        const ok = await this.onReport(reasonId);
-        if (ok) this.markReported(reasonId);
+        const r = await this.onReport(reasonId);
+        if (r && r.ok) this.markReported(reasonId);
         else this.toast('操作失败，请稍后重试');
       });
       // 浮层覆盖在卡片上方，需阻断冒泡避免误触发卡片跳转
@@ -411,9 +416,14 @@ class DislikeCardUI {
     revert.addEventListener('click', async (e) => {
       e.stopPropagation();
       e.preventDefault();
-      const ok = await this.onCancel(this._reported);
-      if (ok) this.clearReported();
-      else this.toast('撤销失败，请稍后重试');
+      const r = await this.onCancel(this._reported);
+      if (r && r.ok) {
+        this.clearReported();
+        // 远端没接受也不影响本地解除，但必须如实告知，否则用户会以为 B 站那边也撤了
+        if (!r.remote) this.toast('已解除本地屏蔽，B站端撤销未成功');
+      } else {
+        this.toast('撤销失败，请稍后重试');
+      }
     });
     revert.addEventListener('pointerdown', (e) => e.stopPropagation());
 
@@ -728,18 +738,23 @@ class DislikeCardUI {
 }
 
 /**
- * 当前视频「不感兴趣」开关 — 模仿点赞控件，插在点赞与投币之间
+ * UP 主屏蔽开关 — 模仿点赞控件，插在点赞与投币之间
+ *
+ * **UP 主级**语义（见 docs/adr/0017）：点一次上报「不想看此UP主」`reason_id=4`，再点一次撤销。
+ * 同一位 UP 主的每条视频呈同一状态，**换页不重置是该语义的正确表现**，不是状态残留。
+ * 网页端没有可用的「点踩」接口，故该控件只承载「不想看此UP主」这一条真实信号。
  *
  * 约束（实测）：
  * - 操作栏 `.video-toolbar-left-main` 的项是 Vue 渲染的，插件**不插入节点**；
  *   空间靠给第 2 项（投币）加 `margin-left` 让出来，我们再把控件绝对定位到空位上。
  * - 操作栏容器 `.video-toolbar-container` 总宽 693，左组 400 + 右组 197，
  *   空余 96px；因此控件宽度 + 8 必须 ≤ 96。
- * - 点击一次 = 上报「不感兴趣（不想看此UP主，reason_id=4）」，再点一次 = 撤销。
  *
  * 公共接口（dislike.js 依赖）：
  *   new VideoDislikeToggle({ onToggle }) / mount() / unmount() / isMounted()
- *   measure() / applyGeometry(g) / setOn(bool)
+ *   measure() / applyGeometry(g) / setOn(bool) / setReady(bool)
+ *
+ * onToggle(nextOn) 返回 Promise<{ ok, remote }>，语义同 DislikeCardUI（见 docs/adr/0017）。
  */
 class VideoDislikeToggle {
   /** 图标尺寸（与原生点赞项图标一致） */
@@ -769,11 +784,12 @@ class VideoDislikeToggle {
   }
 
   constructor(handlers) {
-    this.onToggle = handlers.onToggle;  // (nextOn) => Promise<boolean>
+    this.onToggle = handlers.onToggle;  // (nextOn) => Promise<{ ok, remote }>
     this.slot = null;
     this._el = null;
     this._toastEl = null;
     this._on = false;
+    this._ready = false;                // UP 主是否已识别就绪（未就绪置灰且不可点）
     this._busy = false;
     this._geo = '';
     this._marginPx = 0;                 // 已写入第 2 项的 margin-left
@@ -921,17 +937,34 @@ class VideoDislikeToggle {
     if (this._el) this._el.classList.toggle('bv-on', this._on);
   }
 
+  /**
+   * 「UP 主识别就绪」闸门：未就绪时置灰且不可点。
+   *
+   * 为什么置灰而不是干脆不显示（见 docs/adr/0017）：SPA 换页那一瞬地址栏已变、页面里
+   * 的 UP 主链接还是上一条视频的，此刻若按 DOM 判定就会亮出**错误的激活态**（用户报的
+   * "换页后不重置"）；而整个撤下又会让每次自动连播都眨一下眼。折中是保持可见、归零并置灰，
+   * 等识别就绪再由 `_syncToggle` 按屏蔽清单回显——既不错，也不闪。
+   */
+  setReady(on) {
+    this._ready = !!on;
+    if (!this._ready) this.setOn(false);   // 未就绪不显示激活态
+    if (this._el) this._el.classList.toggle('bv-unready', !this._ready);
+  }
+
   async _onClick(e) {
     e.stopPropagation();
     e.preventDefault();
-    if (this._busy) return;
+    // 未就绪时拒绝：此时"当前 UP 主"还是上一条视频的，点下去会把上报打到错误的作者上
+    if (this._busy || !this._ready) return;
     this._busy = true;
     const next = !this._on;
-    const ok = await this.onToggle(next);
+    const r = await this.onToggle(next);
     this._busy = false;
-    if (ok) {
+    if (r && r.ok) {
       this.setOn(next);
-      this.toast(next ? '已减少此类推荐' : '已撤销');
+      if (next) this.toast('已减少该作者的推荐');
+      // 远端没接受也不影响本地解除，但必须如实告知（见 docs/adr/0017）
+      else this.toast(r.remote ? '已撤销' : '已解除本地屏蔽，B站端撤销未成功');
     } else {
       this.toast(next ? '操作失败，请稍后重试' : '撤销失败，请稍后重试');
     }
@@ -961,6 +994,8 @@ class VideoDislikeToggle {
       }
       .bv-dl-toggle:hover { color: rgb(0, 174, 236); }
       .bv-dl-toggle.bv-on { color: rgb(0, 174, 236); }
+      /* 当前 UP 主尚未识别就绪：置灰、不可点（见 setReady 与 docs/adr/0017） */
+      .bv-dl-toggle.bv-unready { opacity: .45; pointer-events: none; cursor: default; }
       /* 垂直翻转点赞图标即为"踩"，与点赞控件同源同形 */
       .bv-dl-toggle-icon {
         width: 24px;
@@ -990,7 +1025,7 @@ class VideoDislikeToggle {
 
   static get MARKUP() {
     return `
-      <div class="bv-dl-toggle" role="button" title="不感兴趣（减少此类与该作者推荐）">
+      <div class="bv-dl-toggle bv-unready" role="button" title="屏蔽该 UP 主（再点一次撤销）">
         <svg viewBox="0 0 36 36" class="bv-dl-toggle-icon" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="${VideoDislikeToggle.THUMB_PATH}"></path></svg>
       </div>
       <div class="bv-dl-toggle-toast"></div>
