@@ -1,11 +1,16 @@
 /**
  * 醒目留言（SC）取数 — HTTP 轮询
  *
- * 设计（见 docs/adr/0005）：
+ * 设计（见 docs/adr/0005、0017）：
  * - 唯一取数路径：轮询 getMessageList，无需登录，返回"当前悬挂中"的全部 SC
  * - SC 属长悬挂内容（最短 60 秒），10 秒轮询不会漏项，无需拦截 WebSocket（弹幕包为 brotli，
  *   浏览器原生 DecompressionStream 不支持）
  * - 以 id 为主键增量合并；接口中消失的 id 判为已移除（悬挂结束或被删除）
+ * - **"是否仍悬挂"的唯一判据是 `visible()`**（按本地 `endTime` 过滤，与浮层同一条规则）。
+ *   本层不再私自清扫过期项：过期项留在 items 里由 `visible()` 挡住、由下一轮"接口消失即移除"
+ *   清出，避免出现第三套与浮层各删各的时钟（见 docs/adr/0017）
+ * - `poll()` 带**超时看门狗**：单次请求挂起不再让 `_inflight` 永久为真。否则一次网络挂起即
+ *   令整条轮询永久停摆，表现为"候补永不补位、只能刷新页面才恢复"
  *
  * 公共接口（content.js 依赖）：
  *   BVSuperChatFeed(intervalMs) / setRoom(roomId) / start() / stop()
@@ -21,16 +26,23 @@ class SuperChatFeed {
     return 10000;
   }
 
+  /** 单次请求超时：到点即中止放行，避免挂起的请求把整条轮询卡死 */
+  static get TIMEOUT() {
+    return 8000;
+  }
+
   constructor(opts) {
     const o = opts || {};
     this.roomId = null;
     this.items = new Map();   // id -> 归一化 SC
     this.closed = new Set();  // 本次会话内被手动关闭的 id（不再随轮询复现）
     this.interval = o.interval || SuperChatFeed.INTERVAL;
+    this.timeout = o.timeout || SuperChatFeed.TIMEOUT;
     this.onUpdate = o.onUpdate || (() => {});
     this._timer = null;
     this._on = false;
     this._inflight = false;
+    this._ctrl = null;
   }
 
   /** 切房：清空状态并立即回填一次 */
@@ -57,6 +69,7 @@ class SuperChatFeed {
       clearInterval(this._timer);
       this._timer = null;
     }
+    this._abort();   // 顺手中止在途请求，别让它带着旧房间的列表回来
     this.items.clear();
     this._emit();
   }
@@ -70,7 +83,11 @@ class SuperChatFeed {
     if (this.items.delete(key)) this._emit();
   }
 
-  /** 当前应展示的 SC：未手动关闭、未过期，按价格降序 */
+  /**
+   * 当前应展示的 SC：未手动关闭、未过期，按价格降序。
+   * **全插件唯一的"是否仍悬挂"判据**——浮层算显示窗时用的是同一条规则，改这里必须同步改
+   * `SuperChatOverlay.computeWindow()`（见 docs/adr/0017）。
+   */
   visible() {
     const now = Date.now() / 1000;
     const out = [];
@@ -83,23 +100,40 @@ class SuperChatFeed {
     return out;
   }
 
+  /** 中止在途请求（超时看门狗与 stop() 共用） */
+  _abort() {
+    if (this._ctrl) {
+      try { this._ctrl.abort(); } catch (_) {}
+      this._ctrl = null;
+    }
+  }
+
   async poll() {
     if (!this.roomId || this._inflight) return;
+    const room = this.roomId;
     this._inflight = true;
-    const url = `${SuperChatFeed.API}?room_id=${encodeURIComponent(this.roomId)}`;
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    this._ctrl = ctrl;
+    let timer = null;
+    if (ctrl) timer = setTimeout(() => ctrl.abort(), this.timeout);
+    const url = `${SuperChatFeed.API}?room_id=${encodeURIComponent(room)}`;
     let list = null;
     try {
-      const res = await fetch(url, { credentials: 'include' });
+      const res = await fetch(url, { credentials: 'include', signal: ctrl ? ctrl.signal : undefined });
       const data = await res.json();
       if (data && data.code === 0 && data.data && Array.isArray(data.data.list)) {
         list = data.data.list;
       }
     } catch (_) {
-      // 网络异常：保留现有列表，等下一轮重试
+      // 网络异常 / 超时中止：保留现有列表，等下一轮重试
     } finally {
+      // 看门狗兜底：正常返回、抛错、超时中止一律走这里，_inflight 必然复位
+      if (timer) clearTimeout(timer);
+      if (this._ctrl === ctrl) this._ctrl = null;
       this._inflight = false;
     }
-    if (!list) return;
+    // 迟到/过期的响应一律丢弃：期间已停轮询或换了房间，写进去会污染状态
+    if (!list || !this._on || this.roomId !== room) return;
 
     const seen = new Set();
     for (const raw of list) {
@@ -108,11 +142,10 @@ class SuperChatFeed {
       seen.add(it.id);
       this.items.set(it.id, it);
     }
-    // 接口中消失的 id 判为已移除
+    // 接口中消失的 id 判为已移除（过期项也由此清出 items，无需再单独清扫）
     for (const id of Array.from(this.items.keys())) {
       if (!seen.has(id)) this.items.delete(id);
     }
-    this._sweepExpired();
     this._emit();
   }
 
@@ -135,13 +168,6 @@ class SuperChatFeed {
       bgPriceColor: raw.background_price_color || '',
       fontColor: raw.font_color || ''
     };
-  }
-
-  _sweepExpired() {
-    const now = Date.now() / 1000;
-    for (const [id, it] of Array.from(this.items.entries())) {
-      if (it.endTime && it.endTime <= now) this.items.delete(id);
-    }
   }
 
   _emit() {

@@ -14,9 +14,17 @@
  * - 进度条用 requestAnimationFrame 逐帧插值，而不是每秒跳一格
  * - 出入场同时折叠/展开卡片高度，避免相邻卡片瞬跳
  *
+ * 显示窗与补位（见 docs/adr/0017）：
+ * - 浮层自持「最后一次已知的可见列表」（`_items`），显示窗（最多 3 条）与「+N 条」计数
+ *   一律由纯函数 `computeWindow(items, now)` 现场算出——**删卡与补位出自同一次计算**，
+ *   故二者永远自洽
+ * - `_reconcile()` 是唯一的 DOM 同步入口，三条路径共用：取数推送（`render`）、
+ *   本地到期（`_tick`）、宿主重建后的回填。因此某条悬挂到点时，候补会**在同一帧内**
+ *   顶入并刷新计数，不必等下一轮 10 秒轮询（这正是"候补不补位"的修复点）
+ *
  * 公共接口（content.js 依赖）：
  *   BoostSuperChatOverlay(onClose) / mount() / unmount() / isMounted()
- *   setPosition(pos) / render(items, max) / show() / hide() / isShowing()
+ *   setPosition(pos) / render(items) / show() / hide() / isShowing()
  */
 class SuperChatOverlay {
   /** 注入点回退序列（B 站改版时逐级退化） */
@@ -44,6 +52,27 @@ class SuperChatOverlay {
     return 260;
   }
 
+  /**
+   * 纯函数：由「最后一次已知的可见列表」+ 本地时钟算出显示窗。
+   * 显示窗成员的**移除**与候补的**补位**都出自这一次计算，故二者永远自洽。
+   * 「是否仍悬挂」的判据与取数层 `SuperChatFeed.visible()` 是**同一条规则**
+   * （`endTime <= now` 即出局），改一处必须同步改另一处（见 docs/adr/0017）。
+   * @param {Array} items 可见列表（顺序无关，内部按价格重排）
+   * @param {number} [now] 秒级时间戳；缺省取本地时钟（注入假时钟便于测试）
+   * @returns {{top: Array, more: number}} 显示窗与折叠计数
+   */
+  static computeWindow(items, now) {
+    const t = now == null ? Date.now() / 1000 : now;
+    const live = [];
+    for (const it of (items || [])) {
+      if (it.endTime && it.endTime <= t) continue;
+      live.push(it);
+    }
+    live.sort((a, b) => b.price - a.price);
+    const top = live.slice(0, SuperChatOverlay.MAX_CARDS);
+    return { top, more: live.length - top.length };
+  }
+
   constructor(onClose, resolveDoc) {
     this.onClose = onClose || (() => {});
     this._resolveDoc = typeof resolveDoc === 'function' ? resolveDoc : () => document;
@@ -51,7 +80,8 @@ class SuperChatOverlay {
     this.root = null;
     this.wrap = null;
     this.position = 'top-right';
-    this._cards = new Map();   // id -> { wrap, card, fill, data, scale }
+    this._items = [];          // 最后一次已知的可见列表（取数推送的快照，含候补）
+    this._cards = new Map();   // id -> { wrap, card, fill, data, scale }（仅显示窗内的卡片）
     this._moreEl = null;
     this._shown = false;
     this._raf = null;
@@ -114,6 +144,7 @@ class SuperChatOverlay {
     }
     this._cards.clear();
     this._moreEl = null;
+    this._items = [];
     this._shown = false;
   }
 
@@ -145,25 +176,37 @@ class SuperChatOverlay {
   }
 
   /**
-   * 增量渲染（调用方已按价格降序）。
-   * 只有真正新增的卡片播放入场动画，离开列表的卡片先播退场动画再移除；
-   * 已有卡片原地更新，不重建、不移动，避免动画被反复重播。
+   * 取数推送入口：记下「最后一次已知的可见列表」，随即重算显示窗。
+   * 之后即使再无取数事件，本地到期也会驱动同一套重算（见 _tick）。
    */
   render(items) {
     if (!this.wrap) return;
-    const max = SuperChatOverlay.MAX_CARDS;
-    const top = items.slice(0, max);
+    this._items = Array.isArray(items) ? items.slice() : [];
+    this._reconcile();
+    this._tick();
+  }
+
+  /**
+   * 就地重算显示窗并同步 DOM —— 唯一的渲染出口，三条路径共用：
+   * 取数推送（`render`）、本地到期（`_tick`）、宿主重建后的回填（content.js）。
+   * 一次调用同时完成：删卡 + 退场动画 + 候补补位（入场动画）+ 刷新折叠计数。
+   */
+  _reconcile() {
+    if (!this.wrap) return;
+    const { top, more } = SuperChatOverlay.computeWindow(this._items);
     const keep = new Set(top.map((it) => it.id));
 
-    // 1) 退场：不在本次列表中的已渲染卡片（悬挂结束 / 被删除 / 被挤出上限）
+    // 1) 退场：不在显示窗内的已渲染卡片（悬挂结束 / 被手动关闭 / 被删除 / 被挤出上限）。
+    //    节点留在原槽位折叠（由下方光标跳过），后面的卡片因此原地向上收拢，而不是整体下移。
     for (const [id, rec] of Array.from(this._cards)) {
       if (keep.has(id)) continue;
       this._cards.delete(id);
       this._leave(rec.wrap);
     }
 
-    // 2) 入场与更新：按列表顺序保证 DOM 顺序，且不移动已有卡片
-    let prevWrap = null;
+    // 2) 就位：光标沿 DOM 前进并跳过「退场中」的节点，逐个把显示窗卡片放到光标之前。
+    //    已在正确位置的卡片不移动（移动会重启动画）；缺失的（新到的 / 刚补位的）在此入场。
+    let cursor = this.wrap.firstChild;
     for (const it of top) {
       let rec = this._cards.get(it.id);
       // 自愈：记录若不属于当前 wrap（旧宿主残留 / 已脱离文档），就地丢弃重建。
@@ -172,20 +215,20 @@ class SuperChatOverlay {
         this._cards.delete(it.id);
         rec = null;
       }
+      while (cursor && cursor._leaving) cursor = cursor.nextSibling;
       if (!rec) {
         rec = this._buildItem(it);
         this._cards.set(it.id, rec);
-        this._enter(rec.wrap, prevWrap);
+        this._enter(rec.wrap, cursor);
       } else {
         this._update(rec, it);
-        this._reposition(rec.wrap, prevWrap);
+        if (rec.wrap !== cursor) this.wrap.insertBefore(rec.wrap, cursor || null);
       }
-      prevWrap = rec.wrap;
+      cursor = rec.wrap.nextSibling;
     }
 
     // 3) 折叠提示始终置于末尾
-    this._renderMore(items.length - max);
-    this._tick();
+    this._renderMore(more);
   }
 
   /** 创建卡片（含承载它的可折叠外层）；元素一律建于 wrap 所属文档（活动文档） */
@@ -274,17 +317,11 @@ class SuperChatOverlay {
     rec.data = it;
   }
 
-  /** 保证卡片位于 prevWrap 之后（仅移动需要移动的节点，不动已有卡片） */
-  _reposition(wrap, prevWrap) {
-    const anchor = prevWrap ? prevWrap.nextSibling : this.wrap.firstChild;
-    if (wrap !== anchor && wrap !== prevWrap) this.wrap.insertBefore(wrap, anchor);
-  }
-
-  /** 入场：高度 0 → 自然高度，卡片淡入上浮 */
-  _enter(wrap, prevWrap) {
+  /** 入场：插到 anchor 之前（anchor 为 null 则追加），高度 0 → 自然高度，卡片淡入上浮 */
+  _enter(wrap, anchor) {
     wrap.classList.add('bv-anim', 'bv-enter');
     wrap.style.height = '0px';
-    this._reposition(wrap, prevWrap);
+    this.wrap.insertBefore(wrap, anchor || null);
 
     const h = this._naturalHeight(wrap);
     wrap.getBoundingClientRect();          // 强制回流，确立 0 起点
@@ -385,16 +422,20 @@ class SuperChatOverlay {
       rec.fill.style.transform = `scaleX(${scale})`;
     }
 
-    // 过期清扫每秒至多一次，让悬挂到点的卡片及时播退场动画
+    // 到期即重算显示窗（每秒至多一次）：删卡、退场、候补补位在同一帧内完成，
+    // 不必等下一轮 10 秒轮询——这是"候补不补位"的修复点（见 docs/adr/0017）。
     if (now - this._lastSweep >= 1) {
       this._lastSweep = now;
-      for (const [id, rec] of Array.from(this._cards)) {
-        if (rec.data.endTime && rec.data.endTime <= now) {
-          this._cards.delete(id);
-          this._leave(rec.wrap);
-        }
-      }
+      if (this._hasExpiredCard(now)) this._reconcile();
     }
+  }
+
+  /** 显示窗内是否有卡片已到点（只有它到期才需要重算显示窗） */
+  _hasExpiredCard(now) {
+    for (const rec of this._cards.values()) {
+      if (rec.data.endTime && rec.data.endTime <= now) return true;
+    }
+    return false;
   }
 
   static get TEMPLATE() {
