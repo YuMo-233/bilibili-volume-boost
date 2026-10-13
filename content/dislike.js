@@ -16,9 +16,20 @@
  *   实测该接口不校验 WBI 签名，携带页面 cookie 即可
  * - 视频身份纯 DOM 提取（零网络请求）：bvid 取自链接/URL，
  *   UP 主 mid 取自 space 链接，aid 由 bvid 本地换算（bv2av）
- * - 会话去重：已上报的 bvid 记入集合，推荐卡再次出现不再注入按钮、不重复上报
  * - 未登录（无 bili_jct）不注入任何 UI
  * - 注入位置见 docs/adr/0008：一律挂自有图层，绝不动宿主 Vue 管理的 DOM 结构
+ *
+ * 两层职责（见 docs/adr/0016）：
+ * 1. **信号层**：官方 `feedback/dislike` 上报。它只喂给 B 站的个性化推荐流，
+ *    搜索页（查询相关性）与详情页相关推荐（内容相似度）都不消费它，且生效有服务端延迟。
+ * 2. **过滤层**：本地持久化的**屏蔽清单**（DislikeStore）。上报成功后把 bvid /
+ *    UP 主 mid 记入清单，此后无论刷新、换页还是重进，命中清单的卡片直接呈
+ *    已屏蔽态（默认）或整块隐藏，不再被当成新卡重新注入 ⋮。
+ *    仅靠内存集合是不够的——刷新即清零，卡片会"复活"，这正是本层存在的理由。
+ *
+ * mid 来源已实测：搜索页 `.bili-video-card` 的 `.bili-video-card__info--owner`
+ * 就带 `//space.bilibili.com/{mid}`，与详情页推荐卡一样可直接解析；
+ * `_fillUp()` 仅在卡片结构变化、DOM 里取不到 mid 时兜底（见 _extract）。
  */
 class BoostDislike {
   /** 详情页右侧「相关推荐」卡片选择器（B 站改版时逐级退化） */
@@ -72,8 +83,7 @@ class BoostDislike {
   }
 
   constructor() {
-    this._cards = new Map();    // card 元素 -> { ui, info }
-    this._reported = new Set(); // 已上报的 bvid（会话内去重）
+    this._cards = new Map();    // card 元素 -> { ui, info, blocked }（blocked = 命中的 reason_id 或 null）
     this._running = false;
     this._toggle = null;        // 当前视频的开关控件
     this._raf = null;
@@ -95,6 +105,8 @@ class BoostDislike {
     // 布局变化时对齐 slot 位置（用 capture 以覆盖内部滚动容器）
     window.addEventListener('scroll', this._onViewport, { passive: true, capture: true });
     window.addEventListener('resize', this._onViewport, { passive: true });
+    // 屏蔽清单是逐卡判定的前提：读到盘后立刻补一轮，把命中清单的卡片落到已屏蔽态
+    DislikeStore.ensure().then(() => { if (this._running) this.refresh(); }).catch(() => {});
   }
 
   stop() {
@@ -118,6 +130,8 @@ class BoostDislike {
       this._clearAll();
       return;
     }
+    // 清单未就绪前不注入：否则命中清单的卡片会先以"新卡"形态闪一个 ⋮（start 里会补一轮）
+    if (!DislikeStore.ready) return;
 
     this._syncToggle();
 
@@ -141,7 +155,6 @@ class BoostDislike {
       if (this._cards.has(card)) continue;
       const info = this._extract(card);
       if (!info) continue;                       // 非 UGC 视频卡（番剧/直播/广告）
-      if (this._reported.has(info.bvid)) continue; // 会话内已上报，不再打扰
 
       const ui = new DislikeCardUI(card, info, {
         onReport: (reasonId) => this._report(info, reasonId),
@@ -151,8 +164,30 @@ class BoostDislike {
       if (ui.mount()) this._cards.set(card, { ui, info });
     }
 
+    // 屏蔽清单是唯一判定来源：新注入的卡片与已在册的卡片一并复核。
+    // 好处是"清单被外部改动"（popup 清空 / 切换隐藏模式）不需要任何额外通知路径即可生效。
+    for (const [card, rec] of this._cards) this._applyBlocked(card, rec);
+
     // 布局可能已变化（图片加载、换一换、内容展开），下一帧统一对齐
     this.scheduleReposition();
+  }
+
+  /**
+   * 按当前屏蔽清单复核一张卡片的呈现。
+   * 判定（DislikeStore.match）与呈现分离；比较基准取 UI 自身的已反馈态，
+   * 因为用户点菜单上报 / 点撤销都会即时改变 UI 状态，这里只需补"清单与 UI 不一致"的那部分差。
+   *
+   * 命中屏蔽时默认呈**已屏蔽态**（磨砂 + 撤销，原位不跳动，沿用 docs/adr/0008 的取舍）；
+   * 只有在 popup 打开「彻底隐藏」后才整块撤下（见 docs/adr/0016）。
+   */
+  _applyBlocked(card, rec) {
+    if (!rec || !rec.ui.isMounted()) return;
+    const want = DislikeStore.match(rec.info);   // null | 1 | 4
+    if (rec.ui.reportedReason() !== want) {
+      if (want) rec.ui.markReported(want);
+      else rec.ui.clearReported();
+    }
+    rec.ui.setCardHidden(!!want && DislikeStore.hide);
   }
 
   /**
@@ -205,7 +240,10 @@ class BoostDislike {
     }
     if (!this._toggle.isMounted() && !this._toggle.mount()) {
       this._toggle = null; // 操作栏未就绪，等下一轮
+      return;
     }
+    // 开关回显屏蔽清单：该 UP 主已在清单里时进页面即呈激活态（见 docs/adr/0016）
+    this._toggle.setOn(DislikeStore.isUpBlocked(info.upMid));
   }
 
   /** 本页正在播放的视频身份（bvid 取自 URL，UP 主 mid 取自页面链接） */
@@ -226,25 +264,34 @@ class BoostDislike {
   }
 
   /**
-   * 纯 DOM 提取卡片身份。
-   * 只接受含 /video/BV... 链接、且能解析出 UP 主 mid 的视频卡。
+   * 纯 DOM 提取卡片身份（零网络请求）。
+   * 只接受含 `/video/BV...` 链接的视频卡；UP 主 mid 取不到时置 null，
+   * 由 `_fillUp()` 在"真正要上报 UP 主级理由"时兜底补取（平时不请求）。
+   *
+   * 实测（2026-10）：搜索页 `.bili-video-card` 的 `.bili-video-card__info--owner`
+   * 本身就带 `//space.bilibili.com/{mid}`，与详情页推荐卡一致，故两处都能零请求拿到 mid。
+   * 早期 ADR 0008 记录的"搜索卡完全不含 UP 主信息"已不成立，见 docs/adr/0016。
    */
   _extract(card) {
     try {
       const link = card.querySelector('a[href*="/video/BV"]');
       if (!link) return null;
-      const bvid = this._bvidFrom(link.getAttribute('href'));
+      const href = link.getAttribute('href');
+      const bvid = this._bvidFrom(href);
       if (!bvid) return null;
 
       const upLink = card.querySelector('a[href*="space.bilibili.com/"]');
       const upMid = upLink ? (upLink.getAttribute('href').match(/space\.bilibili\.com\/(\d+)/) || [])[1] : null;
 
-      const nameEl = card.querySelector('.upname .name, .upname');
+      const nameEl = card.querySelector('.bili-video-card__info--author, .upname .name, .upname');
       return {
         bvid,
         aid: BoostDislike.bv2av(bvid),
-        upMid: upMid || null,   // 搜索页卡片不含 UP 主信息，上报前再补取（见 _fillUp）
-        upName: nameEl ? nameEl.textContent.trim() : ''
+        upMid: upMid || null,   // 取不到时上报前再补取（见 _fillUp）
+        upName: nameEl ? nameEl.textContent.trim() : '',
+        // 推荐位追踪 id：部分卡片（`.bili-video-card__wrap` 变体）把它挂在视频链接的
+        // query 里，有则随上报带上、无则为空串——不是所有卡都带，故不做必填
+        trackId: (href.match(/[?&]track_id=([^&#]+)/) || [])[1] || ''
       };
     } catch (_) {
       return null;
@@ -259,16 +306,21 @@ class BoostDislike {
 
   /**
    * 上报（reasonId：1=这个内容，4=UP主）。
-   * 成功后记入会话去重集合。
+   * 上报成功才记入**屏蔽清单**——清单才是"刷新/换页后仍不再打扰"的依据（见 docs/adr/0016）。
+   * 顺序不能颠倒：先拿到服务端确认再落本地，避免上报失败却留下本地屏蔽。
    */
   async _report(info, reasonId) {
-    // 「不想看此UP主」必须带 UP 主 mid；搜索页卡片不含该信息，先补取一次
-    if (!info.upMid && reasonId === BoostDislike.REASON_UP && !(await this._fillUp(info))) {
+    // 「不想看此UP主」必须带 UP 主 mid；DOM 取不到时才补取一次
+    if (reasonId === BoostDislike.REASON_UP && !info.upMid && !(await this._fillUp(info))) {
       return false;
     }
-    const ok = await this._post(BoostDislike.REPORT_URL, info, reasonId);
-    if (ok) this._reported.add(info.bvid);
-    return ok;
+    if (!(await this._post(BoostDislike.REPORT_URL, info, reasonId))) return false;
+
+    await DislikeStore.blockVideo(info.bvid, reasonId);
+    if (reasonId === BoostDislike.REASON_UP && info.upMid) {
+      await DislikeStore.blockUp(info.upMid, info.upName);
+    }
+    return true;
   }
 
   /** 补取 UP 主 mid（`view` 接口免 WBI，同时带回精确 aid） */
@@ -288,14 +340,31 @@ class BoostDislike {
     }
   }
 
-  /** 撤销上报（reasonId 需与上报时一致） */
+  /**
+   * 撤销上报（reasonId 需与上报时一致）。
+   * 撤销成功才解除本地屏蔽：UP 主级撤销同时撤下该 UP 主的整条屏蔽记录，
+   * 这样该 UP 主的其它卡片也会一并恢复（它们此前是靠 mid 命中清单的）。
+   */
   async _cancel(info, reasonId) {
-    const ok = await this._post(BoostDislike.CANCEL_URL, info, reasonId || 1);
-    if (ok) this._reported.delete(info.bvid);
-    return ok;
+    const rid = reasonId || 1;
+    if (!(await this._post(BoostDislike.CANCEL_URL, info, rid))) return false;
+
+    await DislikeStore.unblockVideo(info.bvid);
+    if (rid === BoostDislike.REASON_UP && info.upMid) {
+      await DislikeStore.unblockUp(info.upMid);
+    }
+    return true;
   }
 
-  /** 原生请求体（字段与真机抓包一致） */
+  /**
+   * 原生请求体（字段与真机抓包一致，另按参考实现补 `track_id`）。
+   *
+   * 两处刻意的取舍：
+   * - `track_id` 只在卡片链接里带得到时才发（搜索页部分卡片带，推荐卡不带），
+   *   它是"反馈归因到哪个推荐位"的字段，有则带上更精确。
+   * - `mid` 取不到时**整个字段不发**，不退化成 `mid=0`：与其向服务端声明一个
+   *   并不存在的 UP 主，不如让"内容级"理由保持纯内容级语义。
+   */
   async _post(url, info, reasonId) {
     const csrf = this._csrf();
     if (!csrf) return false;
@@ -311,6 +380,7 @@ class BoostDislike {
       csrf
     };
     if (info.upMid) params.mid = String(info.upMid);   // UP 主未知时不带该字段
+    if (info.trackId) params.track_id = String(info.trackId);
     const body = new URLSearchParams(params);
     try {
       const res = await fetch(url, {

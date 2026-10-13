@@ -211,6 +211,8 @@ class DislikeCardUI {
     this._settleTimer = null;
     this._title = null;                                    // 标题元素（为 ⋮ 预留右侧空间）
     this._prevPadR = '';                                   // 预留前的 inline padding-right
+    this._hidden = false;                                  // 「彻底隐藏」是否已生效
+    this._prevDisplay = '';                                // 隐藏前的 inline display（还原用）
   }
 
   isMounted() {
@@ -256,6 +258,7 @@ class DislikeCardUI {
     this._onCardEnter = null;
     this._onCardLeave = null;
     this._popHover = false;
+    this.setCardHidden(false);  // 还原宿主卡片的 display，不留副作用
     this._applyFeedback(false); // 还原封面磨砂与信息区可见性，不留副作用
     this._releaseTitle();       // 还原标题右侧内边距
     if (this.slot) {
@@ -467,6 +470,35 @@ class DislikeCardUI {
     this._overlay.classList.remove('bv-show');
   }
 
+  /** 当前已反馈的 reason_id（未进入已反馈态为 null）——供控制器做幂等比较 */
+  reportedReason() {
+    return this._reported;
+  }
+
+  /**
+   * 「彻底隐藏」模式：把宿主卡片整块撤下（`display: none`）。
+   *
+   * 与 docs/adr/0008「绝不增删宿主节点、只改内联样式」一致——这里只写内联 display，
+   * 解除时按原值还原（Vue 重渲染会抹掉内联样式，下一轮 refresh 复核会自动重新施加）。
+   *
+   * 默认**不启用**：屏蔽后原位呈已屏蔽态、列表不跳动（ADR 0008 的取舍）。
+   * 隐藏是用户在 popup 里明确选择的行为，此时列表重排正是预期结果（见 docs/adr/0016）。
+   */
+  setCardHidden(on) {
+    if (!this.card) return;
+    if (on === this._hidden) return;      // 幂等：状态一致不写样式
+    this._hidden = !!on;
+    if (on) {
+      this._prevDisplay = this.card.style.display;
+      this.card.style.display = 'none';
+      if (this.slot) this.slot.classList.add('bv-card-hidden');
+    } else {
+      this.card.style.display = this._prevDisplay || '';
+      this._prevDisplay = '';
+      if (this.slot) this.slot.classList.remove('bv-card-hidden');
+    }
+  }
+
   /**
    * 进入 / 退出已反馈态：
    * - 封面磨砂：给封面图外层加 `filter: blur(20px)`（原生同款，带 .3s 过渡）
@@ -523,6 +555,8 @@ class DislikeCardUI {
       .bv-dl-slot { position: absolute; pointer-events: none; overflow: visible; }
       /* 布局未定型（几何仍在变）期间整槽隐藏，避免把元素画在错误位置后"回正"（见 docs/adr/0009） */
       .bv-dl-slot.bv-unsettled { visibility: hidden; }
+      /* 卡片被「彻底隐藏」时整槽一并撤下，避免控件浮在空位上（见 setCardHidden） */
+      .bv-dl-slot.bv-card-hidden { display: none; }
 
       /* ⋮ 按钮 + 弹出菜单的 hover 容器。位置与原生一致：贴信息区右上、
          与标题第一行对齐（left/top 由 applyGeometry 写入）；

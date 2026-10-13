@@ -10,6 +10,7 @@
  * 6. 醒目留言浮层（仅直播页）：轮询取数 + 全屏显隐（docs/adr/0005）
  * 7. popup 状态查询
  * 8. SPA 导航（同文档换页）→ 重识别（docs/adr/0015）
+ * 9. 「不感兴趣」屏蔽清单联动（docs/adr/0016）：清单变化后立即复核卡片呈现
  */
 (() => {
   'use strict';
@@ -254,6 +255,10 @@
   // ---- 相关推荐「不感兴趣」（仅视频详情页，见 docs/adr/0008） ----
   const dislike = new BoostDislike();
 
+  /**
+   * 屏蔽清单的第一轮读盘在这里兜住：start() 内部会 `ensure()` 并在完成后补一次 refresh，
+   * 故此处即便 refresh 因"清单未就绪"提前返回，稍后也会自动补上。
+   */
   function syncDislike() {
     // 总开关关闭时一并撤下注入（本功能无独立开关，随总开关联动）
     if (!enabled) {
@@ -262,18 +267,21 @@
     }
     if (current.type === 'video') {
       if (!dislike._running) dislike.start();
-      dislike.refresh(); // 新增卡片注入 / 失效卡片清理（含未登录与去重判定）
+      dislike.refresh(); // 新增卡片注入 / 失效卡片清理（含未登录、清单屏蔽与已反馈态复核）
     } else if (dislike._running) {
       dislike.stop();
     }
   }
 
   function dislikeState() {
+    const st = DislikeStore.stats();
     return {
       running: dislike._running,
       loggedIn: dislike.isLoggedIn(),
       cards: dislike._cards.size,
-      reported: Array.from(dislike._reported),
+      blockedVideos: st.videos,   // 清单里的视频级屏蔽条数
+      blockedUps: st.ups,         // 清单里的 UP 主级屏蔽条数
+      hide: DislikeStore.hide,    // 是否开启「彻底隐藏」
       toggle: !!(dislike._toggle && dislike._toggle.isMounted())
     };
   }
@@ -557,15 +565,22 @@
     // 首次绑定（先挂异形房嵌入帧的观察者/监听，再走全链路）
     reinstate();
 
-    // 存储变化联动（popup 切换总开关 / 醒目留言开关与位置 / 清空记忆）
+    // 存储变化联动（popup 切换总开关 / 醒目留言开关与位置 / 清空记忆 / 屏蔽清单）
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes[MEM_KEY]) {
+      if (area !== 'local') return;
+      if (changes[MEM_KEY]) {
         const nv = changes[MEM_KEY].newValue || {};
         syncEnabled(typeof nv.enabled === 'boolean' ? nv.enabled : true);
         if (nv.sc) {
           scConfig = nv.sc;
           syncSC();
         }
+      }
+      // 屏蔽清单被外部改动（popup 清空 / 切换「彻底隐藏」）→ 失效内存镜像后立即复核。
+      // 必须先 ensure() 重新读盘，否则 refresh 会因"清单未就绪"直接返回、改动不生效。
+      if (changes[BLOCK_KEY]) {
+        DislikeStore.invalidate();
+        DislikeStore.ensure().then(() => syncDislike());
       }
     });
 

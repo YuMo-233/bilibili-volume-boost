@@ -3,6 +3,7 @@
   'use strict';
 
   const MEM_KEY = 'volumeBank.v1';
+  const BLOCK_KEY = 'bv.blocklist.v1';   // 与 content/dislike-store.js 保持一致的存储键
   const SC_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
   const SC_DEFAULT = { enabled: true, position: 'top-right' };
 
@@ -10,11 +11,14 @@
   const enableCheck = $('enabled');
   const scEnableCheck = $('scEnabled');
   const scPositionSel = $('scPosition');
+  const blockHideCheck = $('blockHide');
   const pageState = $('pageState');
   const upName = $('upName');
   const boostEl = $('boost');
   const countEl = $('count');
   const clearBtn = $('clearBtn');
+  const blockCountEl = $('blockCount');
+  const clearBlockBtn = $('clearBlockBtn');
 
   let currentTabId = null;
 
@@ -33,12 +37,23 @@
     return data;
   }
 
+  /** 读取本地屏蔽清单：条数与「彻底隐藏」开关（与页面上的 content script 共用同一 key） */
+  async function loadBlocklist() {
+    const d = await chrome.storage.local.get(BLOCK_KEY);
+    const b = d[BLOCK_KEY] || {};
+    const videos = Object.keys(b.videos || {}).length;
+    const ups = Object.keys(b.ups || {}).length;
+    blockHideCheck.checked = b.hide === true;
+    blockCountEl.textContent = `${videos + ups} 条（视频 ${videos} · UP主 ${ups}）`;
+  }
+
   async function queryActiveTab() {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     return tabs[0];
   }
 
   async function refreshState() {
+    await loadBlocklist();
     const data = await loadGlobal();
     const tab = await queryActiveTab();
     if (!tab || !tab.id) return;
@@ -105,6 +120,24 @@
     });
     loadGlobal();
     pageState.textContent = '已清空记忆';
+  });
+
+  /** 切换「彻底隐藏已屏蔽内容」（写存储后由 content script 的 storage 监听即时生效） */
+  blockHideCheck.addEventListener('change', async () => {
+    const d = await chrome.storage.local.get(BLOCK_KEY);
+    const b = Object.assign({ version: 1, videos: {}, ups: {} }, d[BLOCK_KEY]);
+    b.hide = blockHideCheck.checked;
+    await chrome.storage.local.set({ [BLOCK_KEY]: b });
+  });
+
+  clearBlockBtn.addEventListener('click', async () => {
+    if (!confirm('确定清空全部屏蔽记录？\n清空后此前标记过的内容会重新出现（B 站服务端已收到的降权反馈不受影响）。')) return;
+    const d = await chrome.storage.local.get(BLOCK_KEY);
+    const hide = (d[BLOCK_KEY] || {}).hide === true;
+    // 只清屏蔽记录，保留「彻底隐藏」开关偏好
+    await chrome.storage.local.set({ [BLOCK_KEY]: { version: 1, hide, videos: {}, ups: {} } });
+    loadBlocklist();
+    pageState.textContent = '已清空屏蔽记录';
   });
 
   // 打开时与窗口聚焦时刷新

@@ -68,6 +68,14 @@
   </div>
 
   <div class="row">
+    <span>彻底隐藏已屏蔽内容</span>
+    <label class="switch">
+      <input type="checkbox" id="blockHide">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="row">
     <span>当前页面</span>
     <span id="pageState" class="muted">未在 B 站视频/直播页</span>
   </div>
@@ -85,11 +93,17 @@
     <span id="count" class="muted"></span>
   </div>
 
+  <div class="row">
+    <button id="clearBlockBtn" class="danger">清空屏蔽记录</button>
+    <span id="blockCount" class="muted"></span>
+  </div>
+
   <div class="tips">
     <b>快捷键</b>（播放器内，输入框自动放行）<br>
     Alt + ↑ / ↓ 微调增益 · Alt + 0-9 定档（0=50%，1=100%，之后每档 +50%，9=500%）<br>
     Alt + M 静音切换<br>
-    <b>音量模型</b>：B 站原生音量管 0-100%，插件的增益管 50%-500%（感知等量刻度，默认 100%，300% 以上为极限区），最终响度 = 原生 × 增益。
+    <b>音量模型</b>：B 站原生音量管 0-100%，插件的增益管 50%-500%（感知等量刻度，默认 100%，300% 以上为极限区），最终响度 = 原生 × 增益。<br>
+    <b>不感兴趣</b>：搜索页与详情页相关推荐的 ⋮ 会同时走 B 站官方上报并记入本地屏蔽清单，被标记的内容刷新后不再重新出现；默认原位呈「已屏蔽」并保留撤销入口，打开上方开关则整块隐藏。
   </div>
 
   <script src="popup.js"></script>
