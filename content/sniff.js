@@ -6,6 +6,9 @@
  * 各页面数据源（已实测）：
  * - 视频页：window.__INITIAL_STATE__.upInfo.mid / videoData.owner.mid
  * - 新版直播页：window.__SSR_INITIAL_STATE__.baseInfoRoom.room_info.uid（旧 __INITIAL_STATE__ 已弃用）
+ *
+ * 除加载期识别外，本模块还负责 **SPA 导航感知**（见 docs/adr/0015）：B 站站内同文档跳转
+ * 不重新注入脚本，故由本模块挂钩 history 并派发 bv_boost_nav / 变化后的 bv_boost_up。
  */
 (() => {
   'use strict';
@@ -23,72 +26,148 @@
     }
   };
 
+  let lastUpKey = '';   // 上次已派发的 UP 主（"type:mid"）：导航后据此判断"读到的是不是新值"
+
   const send = (detail) => {
+    lastUpKey = detail.type + ':' + detail.mid;
     emit('bv_boost_up', detail);
   };
 
   const isLive = () =>
     location.hostname.indexOf('live.') === 0 || location.hostname === 'live.bilibili.com';
 
+  const nameFromDom = () => {
+    const el = document.querySelector('.room-owner-username');
+    return el ? el.textContent.trim() : '';
+  };
+
   /** 新版直播页 SSR 状态 */
-  const readLiveNew = () => {
+  const probeLiveNew = () => {
     const S2 = window.__SSR_INITIAL_STATE__;
-    if (!S2) return false;
+    if (!S2) return null;
     const b = S2.baseInfoRoom;
     const roomInfo = b && b.room_info;
     const anchorBase = b && b.anchor_info && b.anchor_info.base_info;
     const uid = roomInfo && roomInfo.uid;
-    if (uid) {
-      const nameEl = document.querySelector('.room-owner-username');
-      send({
-        mid: String(uid),
-        type: 'live',
-        name: (anchorBase && (anchorBase.uname || anchorBase.name || anchorBase.username)) ||
-              (nameEl ? nameEl.textContent.trim() : '')
-      });
-      return true;
-    }
-    return false;
+    if (!uid) return null;
+    return {
+      mid: String(uid),
+      type: 'live',
+      name: (anchorBase && (anchorBase.uname || anchorBase.name || anchorBase.username)) || nameFromDom()
+    };
   };
 
   /** 旧版直播页状态（兼容） */
-  const readLiveOld = () => {
+  const probeLiveOld = () => {
     try {
       const s = window.__INITIAL_STATE__;
       const anchor = s && s.roomInfo && s.roomInfo.anchor;
-      if (anchor && anchor.uid) {
-        send({ mid: String(anchor.uid), type: 'live', name: anchor.uname || '' });
-        return true;
-      }
-    } catch (_) {}
-    return false;
+      if (!anchor || !anchor.uid) return null;
+      return { mid: String(anchor.uid), type: 'live', name: anchor.uname || '' };
+    } catch (_) { return null; }
   };
 
-  const readVideo = () => {
+  const probeVideo = () => {
     try {
       const s = window.__INITIAL_STATE__;
-      if (!s) return false;
+      if (!s) return null;
       const up = s.upInfo || {};
       const owner = (s.videoData && s.videoData.owner) || null;
       const mid = up.mid || (owner && owner.mid);
-      if (mid) {
-        send({ mid: String(mid), type: 'video', name: up.name || (owner && owner.name) || '' });
-        return true;
-      }
-    } catch (_) {}
-    return false;
+      if (!mid) return null;
+      return { mid: String(mid), type: 'video', name: up.name || (owner && owner.name) || '' };
+    } catch (_) { return null; }
+  };
+
+  /** 读取当前 UP 主/主播（不改状态、不派发）；读不到返回 null */
+  const probe = () => {
+    try {
+      if (isLive()) return probeLiveNew() || probeLiveOld();
+      return probeVideo();
+    } catch (_) { return null; }
   };
 
   const readOnce = () => {
-    try {
-      if (isLive()) return readLiveNew() || readLiveOld();
-      return readVideo();
-    } catch (_) { return false; }
+    const v = probe();
+    if (v) send(v);
+    return !!v;
   };
 
   // 页面状态在解析期间写入，轮询几次兜底
   if (!readOnce()) {
     [500, 1500, 3000, 6000].forEach((ms) => setTimeout(() => readOnce(), ms));
+  }
+
+  // ---------------------------------------------------------------------------
+  // SPA 导航感知（见 docs/adr/0015）
+  //
+  // B 站视频页之间（点推荐、自动连播、切分P、/list/ 合集）与直播切房都是**同文档导航**：
+  // 地址栏变了、本脚本不重新注入、__INITIAL_STATE__ 被路由原地改写。而上面这段只在加载期
+  // 轮询 4 次就永久停手 —— 新视频的 UP 主再也送不出去，主逻辑的 mid 停在旧值，旧增益被原样
+  // 套用到下一个视频。故挂钩 history / popstate / hashchange，导航后**读到变化为止**重读状态。
+  // ---------------------------------------------------------------------------
+  const NAV_REREAD_INTERVAL = 250;   // 重读间隔
+  const NAV_REREAD_GRACE = 1200;     // 放宽期：到点仍未读到变化就先派发一次（多为同 UP 主切分P/连播）
+  const NAV_REREAD_DEADLINE = 8000;  // 此后转慢轮询，兜住路由延迟改写状态的情况
+
+  let navSeq = 0;                    // 导航序号：新导航作废在途的重读
+  let lastHref = location.href;
+
+  // 只在顶层窗口挂钩：嵌入帧内也跑着本脚本，其 history 属于帧自身，
+  // 若也派发导航信号会与顶层地址栏混淆（见 docs/adr/0013）
+  const isTopFrame = (() => {
+    try { return window.top === window; } catch (_) { return false; }
+  })();
+
+  /**
+   * 导航后重读全局状态，直到读出与导航前**不同**的 UP 主为止再派发。
+   * 必须"读到变化才收工"：路由是异步拉数据再改写 __INITIAL_STATE__，导航瞬间读到的往往
+   * 还是上一个视频的 UP 主；若就此收工，旧 UP 主会被当成新值送去，主逻辑又把旧增益套到
+   * 新视频 —— 正是本次要修的故障。
+   */
+  const readUntilFresh = (staleKey) => {
+    const seq = ++navSeq;
+    const started = Date.now();
+    let anySent = false;   // 是否已派发过（放宽期兜底），保证每次导航主逻辑都能收到一次确认
+    const step = () => {
+      if (seq !== navSeq) return;                    // 已被更新的导航取代
+      const v = probe();
+      if (v) {
+        const key = v.type + ':' + v.mid;
+        if (key !== staleKey) { send(v); return; }    // 读到新 UP 主：派发并收工
+      }
+      const elapsed = Date.now() - started;
+      // 放宽期到点仍无变化：派发一次当前值，让主逻辑结束"识别中"状态
+      // （同 UP 主切分P/连播走这条；此刻若状态尚不可读，则等它可读时立刻补派发）
+      if (!anySent && elapsed >= NAV_REREAD_GRACE && v) { send(v); anySent = true; }
+      if (elapsed >= NAV_REREAD_DEADLINE) return;
+      setTimeout(step, anySent ? 800 : NAV_REREAD_INTERVAL);
+    };
+    step();
+  };
+
+  const onNavigate = () => {
+    if (location.href === lastHref) return;   // replaceState 原地改写同一 URL：不算导航
+    const staleKey = lastUpKey;
+    lastHref = location.href;
+    emit('bv_boost_nav', { href: location.href });
+    readUntilFresh(staleKey);
+  };
+
+  if (isTopFrame) {
+    ['pushState', 'replaceState'].forEach((fn) => {
+      try {
+        const orig = history[fn];
+        if (typeof orig !== 'function') return;
+        history[fn] = function (...args) {
+          const ret = orig.apply(this, args);
+          try { onNavigate(); } catch (_) {}
+          return ret;
+        };
+      } catch (_) {}
+    });
+    window.addEventListener('popstate', onNavigate, true);
+    window.addEventListener('hashchange', onNavigate, true);
   }
 
   // ---------------------------------------------------------------------------

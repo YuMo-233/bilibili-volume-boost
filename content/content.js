@@ -9,6 +9,7 @@
  * 5. UP 主记忆的读取/应用/写入（防抖 + LRU）
  * 6. 醒目留言浮层（仅直播页）：轮询取数 + 全屏显隐（docs/adr/0005）
  * 7. popup 状态查询
+ * 8. SPA 导航（同文档换页）→ 重识别（docs/adr/0015）
  */
 (() => {
   'use strict';
@@ -106,10 +107,10 @@
     if (!force && lastApplied === probe) return;
     try {
       const memo = await Memory.getGain(current.mid, current.type);
-      if (memo != null) {
-        engine.setBoost(memo);
-        uiSync();
-      }
+      // 无记忆时必须**显式回到默认 100%**：SPA 导航到"没记过的 UP 主"时若什么都不做，
+      // 增益就会把上一个视频的值留在引擎里（引擎是整会话单例，见 docs/adr/0015）
+      engine.setBoost(memo != null ? memo : 100);
+      uiSync();
       lastApplied = probe; // 仅在查询成功（引擎已就绪）后置位，避免提前置位导致永不应用
     } catch (e) {
       // 诊断输出：自动化定位记忆读取异常
@@ -322,6 +323,81 @@
     syncDislike();
   }
 
+  // ---- 页面身份 / SPA 导航 → 重识别（见 docs/adr/0015） ----
+  // B 站视频页之间（点推荐、自动连播、切分P、/list/ 合集）与直播切房都是**同文档导航**：
+  // 地址栏变了、脚本实例不重载，而 UP 主识别只在加载期跑过一次（sniff 轮询 4 次即停，
+  // domSniff 又被 hasUpEvent 闸门永久短路），于是 current.mid 停在旧 UP 主、旧增益被原样
+  // 套用到下一个视频。故以「页面身份」变化为信号，清空识别状态并重跑整条链路。
+
+  /**
+   * 页面身份：判定"是否换了一个内容"的稳定标识。
+   * 视频页取 bvid（/list/ 合集的 bvid 在 query 里而非路径），直播页取路径首段数字（短号）。
+   * ?t= / ?p= / spm_id_from 等参数不参与——身份不变即同一内容，不触发重识别（防音量抖动）。
+   */
+  function pageIdentity() {
+    if (current.type === 'live') {
+      const m = location.pathname.match(/^\/(\d+)/);
+      return m ? 'live:' + m[1] : 'live:' + location.pathname;
+    }
+    const p = location.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/i);
+    if (p) return 'video:' + p[1].toUpperCase();
+    const q = location.search.match(/[?&]bvid=(BV[0-9A-Za-z]+)/i);
+    if (q) return 'video:' + q[1].toUpperCase();
+    const av = location.pathname.match(/\/video\/av(\d+)/i) || location.search.match(/[?&]aid=(\d+)/i);
+    if (av) return 'video:av' + av[1];
+    return 'video:' + location.pathname;
+  }
+
+  let identity = pageIdentity();
+  let navFallbackTimer = null;
+
+  /**
+   * 清空 UP 主识别状态：mid 置未知（增益在识别完成前不动）、事件已送达标记归零
+   * （让 domSniff 对本次身份重新武装，见 docs/adr/0015）、记忆应用闩锁作废。
+   */
+  function resetIdentification() {
+    current = { mid: null, type: detectType(), name: '' };
+    hasUpEvent.video = false;
+    hasUpEvent.live = false;
+    lastApplied = null;
+  }
+
+  /** 识别迟迟不出结果（MAIN world 事件与 DOM 兜底都失败）→ 兜底回默认，绝不沿用旧增益 */
+  function armNavFallback() {
+    clearTimeout(navFallbackTimer);
+    navFallbackTimer = setTimeout(() => {
+      if (current.mid || !enabled) return;   // 已识别出 UP 主：交给 applyMemoryGain 处置
+      engine.setBoost(100);
+      uiSync();
+    }, 2500);
+  }
+
+  /**
+   * 重识别：整条链路的唯一入口（首绑 / 2 秒兜底 / 导航事件共用）。
+   * 只重跑识别与注入，**不重建引擎与音频管线**——teardown 会停抽头音轨、还原静音，
+   * 制造无声窗口，与 docs/adr/0011「绝不整页无声」冲突；video 的复用/重建由
+   * bindVideo 与引擎自身的重抽（recapture）覆盖。
+   */
+  function reinstate() {
+    ensureEmbedHooks();
+    domSniff();
+    bindVideo();
+    ensureUI();
+    applyMemoryGain();
+    syncSC();
+    syncDislike();
+  }
+
+  /** 页面身份变化 → 重识别。身份未变（仅 ?t= 等噪声改写地址栏）时什么都不做 */
+  function onNavigation() {
+    const next = pageIdentity();
+    if (next === identity) return;
+    identity = next;
+    resetIdentification();
+    armNavFallback();
+    reinstate();
+  }
+
   // ---- 嵌入帧挂钩（观察者与文档级监听的迁移，见 docs/adr/0013） ----
   let moRef = null;   // 主 MutationObserver（init 中创建，帧更换时重挂目标）
 
@@ -458,6 +534,15 @@
 
   // ---- 初始化 ----
   async function init() {
+    // 先挂监听再读存储：sniff 在 document_start 就可能派发 UP 主/导航事件，
+    // 等存储读完再挂会漏掉早到的事件（漏掉的识别由 2 秒兜底补，但能不漏最好）
+    window.addEventListener('bv_boost_up', onSniffEvent, false);
+    window.addEventListener('bv_boost_nav', onNavigation, false);   // SPA 导航（docs/adr/0015）
+    document.addEventListener('pointerdown', onResumeGesture, true);
+    window.addEventListener('keydown', onKeyDown, true);
+    // 进出沉浸全屏 → 醒目留言浮层显隐（只监听，不介入全屏逻辑，见 docs/adr/0003）
+    document.addEventListener('fullscreenchange', onFsChange, true);
+
     // 恢复总开关与醒目留言配置
     try {
       const data = await Memory.load();
@@ -465,23 +550,12 @@
       if (data.sc) scConfig = data.sc;
     } catch (_) {}
 
-    window.addEventListener('bv_boost_up', onSniffEvent, false);
-    document.addEventListener('pointerdown', onResumeGesture, true);
-    window.addEventListener('keydown', onKeyDown, true);
-    // 进出沉浸全屏 → 醒目留言浮层显隐（只监听，不介入全屏逻辑，见 docs/adr/0003）
-    document.addEventListener('fullscreenchange', onFsChange, true);
-
     // 侦听 video 元素重建与 DOM 变化（B 站切清晰度/切流会替换 video）
     moRef = new MutationObserver(() => onDomChange());
     moRef.observe(document.documentElement, { childList: true, subtree: true });
 
     // 首次绑定（先挂异形房嵌入帧的观察者/监听，再走全链路）
-    ensureEmbedHooks();
-    domSniff();
-    bindVideo();
-    ensureUI();
-    syncSC();
-    syncDislike();
+    reinstate();
 
     // 存储变化联动（popup 切换总开关 / 醒目留言开关与位置 / 清空记忆）
     chrome.storage.onChanged.addListener((changes, area) => {
@@ -517,6 +591,7 @@
         const data = await Memory.load();
         document.documentElement.setAttribute('data-bv-dbg', JSON.stringify({
           mid: current.mid, type: current.type, name: current.name,
+          identity,
           boost: engine.boost, engaged: engine.getState().engaged,
           eng: engine.getState(),
           lastApplied,
@@ -534,15 +609,11 @@
       applyMemoryGain(true);
     }, false);
 
-    // 周期性兜底：SPA 内切换视频（URL/bvid 变化）时重新识别；引擎/主播就绪后补应用记忆
+    // 周期性兜底：onNavigation 靠地址栏快照比对兜住 history 钩子失效；
+    // reinstate 负责引擎/主播就绪后补应用记忆（SPA 内换页的识别由 bv_boost_nav 即时驱动）
     setInterval(() => {
-      ensureEmbedHooks();
-      domSniff();
-      bindVideo();
-      ensureUI();
-      applyMemoryGain();
-      syncSC();
-      syncDislike();
+      onNavigation();
+      reinstate();
     }, 2000);
   }
 
