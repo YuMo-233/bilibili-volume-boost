@@ -13,6 +13,8 @@
     h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: #57b6ff; display: inline-block; }
     .row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid #333; }
     .row:first-of-type { border-top: none; }
+    /* 情境专属设置项的显隐（见 docs/adr/0019）：.row 的 display 会盖过 UA 的 [hidden] */
+    .row[hidden] { display: none; }
     .muted { color: #9a9aa3; }
     .up { color: #57b6ff; font-weight: 600; }
     .badge { padding: 2px 10px; border-radius: 10px; background: #2fa9ff22; color: #7cc6ff; font-weight: 600; }
@@ -50,14 +52,14 @@
     </label>
   </div>
 
-  <div class="row">
+  <div class="row" data-ctx="live">
     <span>全屏显示醒目留言</span>
     <label class="switch">
       <input type="checkbox" id="scEnabled">
       <span class="slider"></span>
     </label>
   </div>
-  <div class="row">
+  <div class="row" data-ctx="live">
     <span>SC 显示位置</span>
     <select id="scPosition">
       <option value="top-right">右上角</option>
@@ -67,7 +69,7 @@
     </select>
   </div>
 
-  <div class="row">
+  <div class="row" data-ctx="video">
     <span>彻底隐藏已屏蔽内容</span>
     <label class="switch">
       <input type="checkbox" id="blockHide">
@@ -75,7 +77,7 @@
     </label>
   </div>
 
-  <div class="row">
+  <div class="row" id="statusRow" hidden>
     <span>当前页面</span>
     <span id="pageState" class="muted">未在 B 站视频/直播页</span>
   </div>
@@ -93,7 +95,7 @@
     <span id="count" class="muted"></span>
   </div>
 
-  <div class="row">
+  <div class="row" data-ctx="video">
     <button id="clearBlockBtn" class="danger">清空屏蔽记录</button>
     <span id="blockCount" class="muted"></span>
   </div>

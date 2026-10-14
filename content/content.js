@@ -72,7 +72,7 @@
     current = { mid: String(mid), type, name: name || current.name };
     if (changed) {
       applyMemoryGain(); // 切到新 UP 主时套用其记忆
-      // UP 主识别就绪 → 立刻解除屏蔽开关的"未就绪"置灰（见 docs/adr/0017）。
+      // UP 主识别就绪 → 立刻解除屏蔽开关的"未就绪"置灰（见 docs/adr/0018）。
       // 少了这一步就得等下一轮 refresh（DOM 变更或 2 秒 tick）才亮起来。
       syncDislike();
     }
@@ -259,7 +259,7 @@
 
   // ---- 相关推荐「不感兴趣」（仅视频详情页，见 docs/adr/0008） ----
   // UP 主识别结果以只读方式注入：屏蔽开关坚持以识别结果为准，不再自己从 DOM 现取 mid
-  // （SPA 换页瞬间两者会短暂不一致，见 docs/adr/0017）
+  // （SPA 换页瞬间两者会短暂不一致，见 docs/adr/0018）
   const dislike = new BoostDislike(() => current);
 
   /**

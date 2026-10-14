@@ -24,7 +24,7 @@
  * onReport / onCancel 均返回 Promise<{ ok, remote }>：
  *   ok     = 本地状态是否已变更（成立才切换 UI）
  *   remote = 服务端是否接受。撤销侧两者可以不一致——远端没接受本地也会解除，
- *            此时必须如实提示用户（见 docs/adr/0017）。
+ *            此时必须如实提示用户（见 docs/adr/0018）。
  */
 
 /** 几何稳定判定所需静止时长（与 docs/adr/0006 的控件就绪判定同一思路） */
@@ -740,7 +740,7 @@ class DislikeCardUI {
 /**
  * UP 主屏蔽开关 — 模仿点赞控件，插在点赞与投币之间
  *
- * **UP 主级**语义（见 docs/adr/0017）：点一次上报「不想看此UP主」`reason_id=4`，再点一次撤销。
+ * **UP 主级**语义（见 docs/adr/0018）：点一次上报「不想看此UP主」`reason_id=4`，再点一次撤销。
  * 同一位 UP 主的每条视频呈同一状态，**换页不重置是该语义的正确表现**，不是状态残留。
  * 网页端没有可用的「点踩」接口，故该控件只承载「不想看此UP主」这一条真实信号。
  *
@@ -754,7 +754,7 @@ class DislikeCardUI {
  *   new VideoDislikeToggle({ onToggle }) / mount() / unmount() / isMounted()
  *   measure() / applyGeometry(g) / setOn(bool) / setReady(bool)
  *
- * onToggle(nextOn) 返回 Promise<{ ok, remote }>，语义同 DislikeCardUI（见 docs/adr/0017）。
+ * onToggle(nextOn) 返回 Promise<{ ok, remote }>，语义同 DislikeCardUI（见 docs/adr/0018）。
  */
 class VideoDislikeToggle {
   /** 图标尺寸（与原生点赞项图标一致） */
@@ -940,7 +940,7 @@ class VideoDislikeToggle {
   /**
    * 「UP 主识别就绪」闸门：未就绪时置灰且不可点。
    *
-   * 为什么置灰而不是干脆不显示（见 docs/adr/0017）：SPA 换页那一瞬地址栏已变、页面里
+   * 为什么置灰而不是干脆不显示（见 docs/adr/0018）：SPA 换页那一瞬地址栏已变、页面里
    * 的 UP 主链接还是上一条视频的，此刻若按 DOM 判定就会亮出**错误的激活态**（用户报的
    * "换页后不重置"）；而整个撤下又会让每次自动连播都眨一下眼。折中是保持可见、归零并置灰，
    * 等识别就绪再由 `_syncToggle` 按屏蔽清单回显——既不错，也不闪。
@@ -963,7 +963,7 @@ class VideoDislikeToggle {
     if (r && r.ok) {
       this.setOn(next);
       if (next) this.toast('已减少该作者的推荐');
-      // 远端没接受也不影响本地解除，但必须如实告知（见 docs/adr/0017）
+      // 远端没接受也不影响本地解除，但必须如实告知（见 docs/adr/0018）
       else this.toast(r.remote ? '已撤销' : '已解除本地屏蔽，B站端撤销未成功');
     } else {
       this.toast(next ? '操作失败，请稍后重试' : '撤销失败，请稍后重试');
@@ -994,7 +994,7 @@ class VideoDislikeToggle {
       }
       .bv-dl-toggle:hover { color: rgb(0, 174, 236); }
       .bv-dl-toggle.bv-on { color: rgb(0, 174, 236); }
-      /* 当前 UP 主尚未识别就绪：置灰、不可点（见 setReady 与 docs/adr/0017） */
+      /* 当前 UP 主尚未识别就绪：置灰、不可点（见 setReady 与 docs/adr/0018） */
       .bv-dl-toggle.bv-unready { opacity: .45; pointer-events: none; cursor: default; }
       /* 垂直翻转点赞图标即为"踩"，与点赞控件同源同形 */
       .bv-dl-toggle-icon {

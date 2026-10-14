@@ -89,7 +89,7 @@ class BoostDislike {
     this._raf = null;
     // 当前 UP 主的**唯一真值来源**（由 content.js 注入，返回其已识别就绪的 { mid, type, name }）。
     // 绝不再从 DOM 现取 mid：SPA 换页瞬间地址栏已变、DOM 里还是上一条视频的 UP 主链接，
-    // 两者拼起来会得出"新视频 + 旧作者"这种不存在的身份（见 docs/adr/0017）。
+    // 两者拼起来会得出"新视频 + 旧作者"这种不存在的身份（见 docs/adr/0018）。
     this._up = typeof upProvider === 'function' ? upProvider : null;
     this._onViewport = () => this.scheduleReposition();
   }
@@ -229,7 +229,7 @@ class BoostDislike {
   /**
    * 当前视频的 UP 主屏蔽开关（模仿点赞项，插在点赞与投币之间）。
    *
-   * **UP 主级**语义（见 docs/adr/0017）：同一位 UP 主的每条视频呈同一状态，换页不重置
+   * **UP 主级**语义（见 docs/adr/0018）：同一位 UP 主的每条视频呈同一状态，换页不重置
    * 是该语义的正确表现，不是状态残留。故回显判定只看"该 UP 主在不在屏蔽清单里"。
    *
    * 三种状态：
@@ -327,7 +327,7 @@ class BoostDislike {
    * 上报（reasonId：1=这个内容，4=UP主）。
    * 返回 `{ ok, remote }`：`remote` = 服务端是否确认；`ok` = 本地屏蔽是否已生效。
    * 上报与本地屏蔽**绑在一起**——没拿到服务端确认就不落清单，避免"上报失败却留下本地屏蔽"。
-   * （与 `_cancel` 相反：那边以本地为准，见 docs/adr/0017）
+   * （与 `_cancel` 相反：那边以本地为准，见 docs/adr/0018）
    */
   async _report(info, reasonId) {
     // 「不想看此UP主」必须带 UP 主 mid；DOM 取不到时才补取一次（卡片路径的兜底）
@@ -365,7 +365,7 @@ class BoostDislike {
   /**
    * 撤销上报。返回 `{ ok, remote }`。
    *
-   * **本地优先**（见 docs/adr/0017）：本地屏蔽清单是插件的呈现决策，必须始终可逆，
+   * **本地优先**（见 docs/adr/0018）：本地屏蔽清单是插件的呈现决策，必须始终可逆，
    * 故远端 `/dislike/cancel` 仅作**最佳努力**——成败都解除本地屏蔽，只把服务端是否
    * 接受如实回报给 UI（`remote`），由 UI 提示「已解除本地屏蔽，B站端撤销未成功」。
    *
@@ -379,7 +379,7 @@ class BoostDislike {
     const rid = reasonId || 1;
 
     // 远端只是信号通道，**不得**成为本地解除的前置条件：连"请求本身抛错"都要兜住，
-    // 否则用户照样关不掉开关（见 docs/adr/0017）
+    // 否则用户照样关不掉开关（见 docs/adr/0018）
     let remote = false;
     try {
       remote = await this._post(BoostDislike.CANCEL_URL, info, rid);
