@@ -19,6 +19,8 @@
 - 托管 Node：`C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2-6\node.exe`；`puppeteer-core` 装在 `...\node\workspace\node_modules`，ESM 里用 `createRequire` 解析。
 - 无独立 ffmpeg，走 `imageio_ffmpeg.get_ffmpeg_exe()`；当前为 v7.1。
 - 无 Chrome，只有 Edge：`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`。
+- 环境有代理（`HTTPS_PROXY=127.0.0.1:51740`），**`git push` 必须走 OpenSSL 后端**：默认 schannel 会报 `schannel: the revocation status is unknown`，且 `http.schannelCheckRevoke=false` 无效。正确命令：`git -c http.sslBackend=openssl push origin main`。
+- 商店后台（Partner Center）主内容区是 Web Components + shadow DOM，DOM 快照只能读到左侧导航，主表单要靠截图；上传包与点「发布」需人工。
 
 ## 收尾约定
 
