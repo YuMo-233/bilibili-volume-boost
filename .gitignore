@@ -1,1 +1,12 @@
 素材/*
+
+# ── 发布凭据：绝不入版本库 ──────────────────────────────
+# 实际的凭据文件放在仓库外（../dist/edge-store/credentials.json）。
+# 下面这些规则是防御性的：万一有人把密钥放进仓库，也不会被提交。
+credentials.json
+*credentials*.json
+*.key
+*.pem
+.env
+.env.*
+!.env.example

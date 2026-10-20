@@ -22,6 +22,13 @@
 - 环境有代理（`HTTPS_PROXY=127.0.0.1:51740`），**`git push` 必须走 OpenSSL 后端**：默认 schannel 会报 `schannel: the revocation status is unknown`，且 `http.schannelCheckRevoke=false` 无效。正确命令：`git -c http.sslBackend=openssl push origin main`。
 - 商店后台（Partner Center）主内容区是 Web Components + shadow DOM，DOM 快照只能读到左侧导航，主表单要靠截图；上传包与点「发布」需人工。
 
+## 发版通道
+
+- **上传与提交审核走官方发布 API**，`scripts/publish-edge.py`（status/init/upload/publish/watch）；元数据（名称/简介/详细说明/截图）无端点，只能进 Partner Center。详见 `docs/store/publish-api.md`。
+- productId `8d677011-d896-47eb-90a9-34b058d00fed`；网关 `https://api.addons.microsoftedge.microsoft.com`。
+- **凭据只放仓库外** `d:\app\dist\edge-store\credentials.json`，`.gitignore` 已加 `credentials*.json` / `*.key` / `.env*` 防御规则。脚本只打印掩码，`init --from-clipboard` 可避免密钥进对话或 shell 历史。
+- **API 密钥 72 天到期，且重建时 Client ID 会一起变**——必须成对更新，否则报 `403 Client ID is Invalid`（容易被误判成"密钥没生效"）。
+
 ## 收尾约定
 
 - 任务完成后提交 git，**只提交自身改动**，提交信息 ≤10 字概括功能；仓库里没有自身改动、或产物本就在仓库外时，跳过提交。
